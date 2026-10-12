@@ -1,4 +1,4 @@
-# AI Desktop Assistant
+# System Bunny
 
 Two-hour MVP foundation: a frameless, transparent, always-on-top Tauri v2 overlay with a React + TypeScript frontend and Supabase authentication.
 
@@ -63,7 +63,7 @@ Registered with `tauri-plugin-global-shortcut` (works while other apps are focus
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl/⌘ + A` | Toggle overlay hide/show |
+| `Ctrl/⌘ + Shift + A` | Toggle overlay hide/show |
 | `Ctrl/⌘ + H` | Capture the desktop (any app), then send to AI analysis |
 | `Ctrl/⌘ + G` | Send the chat question to AI; if empty, clear/reset the view |
 
