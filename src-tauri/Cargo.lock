@@ -30,6 +30,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-http",
  "tauri-plugin-shell",
+ "windows",
  "xcap",
 ]
 

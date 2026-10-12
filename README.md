@@ -63,9 +63,11 @@ Registered with `tauri-plugin-global-shortcut` (works while other apps are focus
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl/⌘ + Shift + A` | Toggle overlay hide/show |
+| `Ctrl/⌘ + Shift + A` | Toggle overlay hide/show (global — no click needed) |
 | `Ctrl/⌘ + H` | Capture the desktop (any app), then send to AI analysis |
 | `Ctrl/⌘ + G` | Send the chat question to AI; if empty, clear/reset the view |
+| `Shift + ↑/↓` | Scroll chat (global) |
+| `Ctrl/⌘ + arrows` | Nudge the overlay window (global) |
 
 **Close** quits the app.
 

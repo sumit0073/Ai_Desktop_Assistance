@@ -5,7 +5,9 @@ import { publishShortcut, subscribeShortcut } from "../lib/shortcutBus";
 export type ShortcutAction =
   | "screenshot-analyze"
   | "screenshot-error"
-  | "analyze-chat";
+  | "analyze-chat"
+  | "scroll-chat-up"
+  | "scroll-chat-down";
 
 export type ShortcutEvent = {
   action: ShortcutAction;
@@ -16,6 +18,8 @@ type Handlers = {
   onScreenshotAnalyze?: (imageBase64: string) => void;
   onScreenshotError?: () => void;
   onAnalyzeChat?: () => void;
+  onScrollChatUp?: () => void;
+  onScrollChatDown?: () => void;
 };
 
 /** Bridge Tauri global-shortcut events into the in-app bus (call once near app root). */
@@ -58,6 +62,10 @@ export function useGlobalShortcuts(handlers: Handlers) {
         handlersRef.current.onScreenshotError?.();
       } else if (action === "analyze-chat") {
         handlersRef.current.onAnalyzeChat?.();
+      } else if (action === "scroll-chat-up") {
+        handlersRef.current.onScrollChatUp?.();
+      } else if (action === "scroll-chat-down") {
+        handlersRef.current.onScrollChatDown?.();
       }
     });
   }, []);

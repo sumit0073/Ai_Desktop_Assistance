@@ -4,6 +4,7 @@ import { useWorkSession } from "../context/WorkSessionContext";
 import { useChatWindowKeys } from "../hooks/useChatWindowKeys";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts";
 import { usePinnedChatScroll } from "../hooks/usePinnedChatScroll";
+import { CHAT_SCROLL_STEP_PX } from "../lib/chatKeyboard";
 import { analyzeWithAi, hasMermaidBlock, type ArchitectureDetail } from "../lib/ai";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ProfileMenu } from "./ProfileMenu";
@@ -22,7 +23,7 @@ const STARTER: ChatMessage = {
   id: "welcome",
   role: "assistant",
   content:
-    "Shortcuts: Ctrl/⌘+Shift+A hides or shows this window · Ctrl/⌘+H captures the screen · Ctrl/⌘+G asks the AI (or clears if empty) · Shift+↑/↓ scrolls chat · Ctrl/⌘+arrows move the window. Close quits the app.",
+    "Shortcuts work while other apps are focused (no need to click Seecog first): Ctrl/⌘+Shift+A hide/show · Ctrl/⌘+H capture · Ctrl/⌘+G ask AI · Shift+↑/↓ scroll · Ctrl/⌘+arrows move window. Close quits the app.",
 };
 
 function screenshotDataUrl(base64: string): string {
@@ -215,6 +216,18 @@ export function ChatInterface() {
     onAnalyzeChat: () => {
       // Cmd/Ctrl+G: send the chat question (and any pending shot) to the AI.
       void runAnalysis(inputRef.current, pendingRef.current);
+    },
+    onScrollChatUp: () => {
+      listRef.current?.scrollBy({
+        top: -CHAT_SCROLL_STEP_PX,
+        behavior: "auto",
+      });
+    },
+    onScrollChatDown: () => {
+      listRef.current?.scrollBy({
+        top: CHAT_SCROLL_STEP_PX,
+        behavior: "auto",
+      });
     },
   });
 

@@ -4,14 +4,16 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use xcap::Monitor;
 
-/// True only after the user intentionally hid the overlay (⌘/Ctrl+A).
+/// True only after the user intentionally hid the overlay (⌘/Ctrl+Shift+A).
 /// Prevents “restore” from being treated as “hide” when Chrome steals focus
-/// but macOS still reports the window as visible.
+/// but the OS still reports the window as visible.
 static OVERLAY_USER_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+const WINDOW_NUDGE_LOGICAL: i32 = 30;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,9 +50,8 @@ fn toggle_window_visibility(app: &AppHandle) -> Result<(), String> {
     let visible = window.is_visible().unwrap_or(false);
     let focused = window.is_focused().unwrap_or(false);
 
-    // Only hide when the overlay is actually frontmost. If Chrome (or another
-    // app) stole focus, the window may still report visible=true while the user
-    // cannot see it — in that case restore instead of hiding again.
+    // Only hide when the overlay is actually frontmost. If Chrome stole focus,
+    // restore instead of hiding again.
     if !user_hidden && visible && focused {
         window.hide().map_err(|e| e.to_string())?;
         OVERLAY_USER_HIDDEN.store(true, Ordering::SeqCst);
@@ -60,13 +61,12 @@ fn toggle_window_visibility(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Bring the overlay back after minimize/hide (no taskbar icon when skipTaskbar is on).
+/// Bring the overlay back without stealing keyboard focus from the front app.
 fn restore_main_window(app: &AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "Main window not found".to_string())?;
 
-    // Unhide the macOS application itself if the OS hid it when switching apps.
     #[cfg(target_os = "macos")]
     {
         let _ = app.show();
@@ -76,7 +76,6 @@ fn restore_main_window(app: &AppHandle) -> Result<(), String> {
         window.unminimize().map_err(|e| e.to_string())?;
     }
 
-    // Re-assert overlay stacking — Chrome activation can leave the window buried.
     let _ = window.set_always_on_top(true);
     #[cfg(target_os = "macos")]
     {
@@ -84,9 +83,63 @@ fn restore_main_window(app: &AppHandle) -> Result<(), String> {
     }
 
     window.show().map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())?;
+    // Do NOT set_focus() — that activates the window and paints the OS focus
+    // highlight. Overlay stays on top; Chrome/other apps keep keyboard focus.
+    strip_os_focus_chrome(&window);
     let _ = window.set_content_protected(true);
     OVERLAY_USER_HIDDEN.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Remove Windows DWM focus/accent border so the overlay does not “light up”
+/// when clicked. No-op on other platforms.
+fn strip_os_focus_chrome(window: &WebviewWindow) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE,
+        };
+
+        if let Ok(hwnd) = window.hwnd() {
+            let color = DWMWA_COLOR_NONE;
+            unsafe {
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_BORDER_COLOR,
+                    &color as *const _ as *const _,
+                    std::mem::size_of_val(&color) as u32,
+                );
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_CAPTION_COLOR,
+                    &color as *const _ as *const _,
+                    std::mem::size_of_val(&color) as u32,
+                );
+            }
+        }
+    }
+    let _ = window;
+}
+
+fn nudge_main_window(app: &AppHandle, dx_logical: i32, dy_logical: i32) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+
+    if window.is_maximized().unwrap_or(false) {
+        return Ok(());
+    }
+
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let dx = ((dx_logical as f64) * scale).round() as i32;
+    let dy = ((dy_logical as f64) * scale).round() as i32;
+
+    window
+        .set_position(PhysicalPosition::new(pos.x + dx, pos.y + dy))
+        .map_err(|e| e.to_string())?;
+    let _ = window.set_always_on_top(true);
+    strip_os_focus_chrome(&window);
     Ok(())
 }
 
@@ -113,8 +166,7 @@ fn capture_primary_monitor_png() -> Result<String, String> {
     let mut jpeg_bytes: Vec<u8> = Vec::new();
     {
         let mut cursor = Cursor::new(&mut jpeg_bytes);
-        let mut encoder =
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 70);
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 70);
         encoder
             .encode(
                 rgb.as_raw(),
@@ -202,6 +254,34 @@ pub fn run() {
 
                     if shortcut.matches(chord_for_handler, Code::KeyG) {
                         emit_shortcut(app, "analyze-chat", None);
+                        return;
+                    }
+
+                    // Chat scroll — works even when Chrome (or another app) has focus.
+                    if shortcut.matches(Modifiers::SHIFT, Code::ArrowUp) {
+                        emit_shortcut(app, "scroll-chat-up", None);
+                        return;
+                    }
+                    if shortcut.matches(Modifiers::SHIFT, Code::ArrowDown) {
+                        emit_shortcut(app, "scroll-chat-down", None);
+                        return;
+                    }
+
+                    // Window nudge — global so the overlay can move without clicking it.
+                    if shortcut.matches(chord_for_handler, Code::ArrowUp) {
+                        let _ = nudge_main_window(app, 0, -WINDOW_NUDGE_LOGICAL);
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowDown) {
+                        let _ = nudge_main_window(app, 0, WINDOW_NUDGE_LOGICAL);
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowLeft) {
+                        let _ = nudge_main_window(app, -WINDOW_NUDGE_LOGICAL, 0);
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowRight) {
+                        let _ = nudge_main_window(app, WINDOW_NUDGE_LOGICAL, 0);
                     }
                 })
                 .build(),
@@ -212,7 +292,6 @@ pub fn run() {
             capture_screen_png
         ])
         .setup(move |app| {
-            // Overlay-style app: no Dock bounce fighting Chrome; matches skipTaskbar.
             #[cfg(target_os = "macos")]
             {
                 let _ = app
@@ -228,15 +307,31 @@ pub fn run() {
                 {
                     let _ = window.set_visible_on_all_workspaces(true);
                 }
+                strip_os_focus_chrome(&window);
+
+                let win = window.clone();
+                let _ = window.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        tauri::WindowEvent::Focused(_) | tauri::WindowEvent::Resized(_)
+                    ) {
+                        strip_os_focus_chrome(&win);
+                        let _ = win.set_always_on_top(true);
+                    }
+                });
             }
 
-            // Prefer ⌘/Ctrl+Shift+A for hide/show — plain ⌘+A is "Select All" on
-            // macOS and often fails to register as a global shortcut.
             let hide_show = Shortcut::new(Some(chord | Modifiers::SHIFT), Code::KeyA);
             let shortcuts = [
                 hide_show,
                 Shortcut::new(Some(chord), Code::KeyH),
                 Shortcut::new(Some(chord), Code::KeyG),
+                Shortcut::new(Some(Modifiers::SHIFT), Code::ArrowUp),
+                Shortcut::new(Some(Modifiers::SHIFT), Code::ArrowDown),
+                Shortcut::new(Some(chord), Code::ArrowUp),
+                Shortcut::new(Some(chord), Code::ArrowDown),
+                Shortcut::new(Some(chord), Code::ArrowLeft),
+                Shortcut::new(Some(chord), Code::ArrowRight),
             ];
 
             for shortcut in shortcuts {
