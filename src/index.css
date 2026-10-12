@@ -2,9 +2,10 @@
 
 :root,
 [data-theme="light"] {
-  --bg-a: #d9e6f2;
-  --bg-b: #eef4f8;
-  --bg-c: #c5ddd4;
+  /* Soft sky + sage — matches System Bunny logo atmosphere */
+  --bg-a: #d5e8ef;
+  --bg-b: #eef6f8;
+  --bg-c: #b9ddd6;
   --panel: rgba(255, 255, 255, 0.42);
   --panel-solid: rgba(255, 255, 255, 0.62);
   --glass: rgba(248, 251, 253, 0.28);
@@ -28,9 +29,10 @@
 }
 
 [data-theme="dark"] {
-  --bg-a: #0a141c;
-  --bg-b: #12222d;
-  --bg-c: #163029;
+  /* Deep teal night — matches glass bunny icon vibe */
+  --bg-a: #07141a;
+  --bg-b: #0e2228;
+  --bg-c: #12352f;
   --panel: rgba(18, 30, 38, 0.58);
   --panel-solid: rgba(18, 30, 38, 0.78);
   --glass: rgba(12, 22, 30, 0.32);

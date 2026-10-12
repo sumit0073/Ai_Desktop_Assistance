@@ -155,12 +155,12 @@ function applyTheme(api: MermaidApi) {
     flowchart: {
       htmlLabels: true,
       curve: "basis",
-      // Compact stack: tight enough to use space, loose enough to stay readable.
-      padding: 20,
-      nodeSpacing: 36,
-      rankSpacing: 64,
-      diagramPadding: 20,
-      wrappingWidth: 140,
+      // Room for full labels (API Gateway, Matching Service) — avoid clipped text.
+      padding: 28,
+      nodeSpacing: 48,
+      rankSpacing: 72,
+      diagramPadding: 24,
+      wrappingWidth: 280,
       useMaxWidth: false,
       defaultRenderer: "dagre-wrapper",
     },
@@ -176,7 +176,9 @@ function applyTheme(api: MermaidApi) {
       clusterBorder: dark ? "#334155" : "#cbd5e1",
       titleColor: dark ? "#f1f5f9" : "#0f172a",
       edgeLabelBackground: dark ? "#1e293b" : "#ffffff",
-      fontSize: "16px",
+      // Keep in sync with CSS — larger post-render fonts clip inside foreignObject.
+      fontSize: "15px",
+      fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
       tertiaryColor: dark ? "#1e293b" : "#f1f5f9",
     },
   });
@@ -250,6 +252,143 @@ function nodeIdFromDom(domId: string): string {
   return domId;
 }
 
+let labelMeasureCtx: CanvasRenderingContext2D | null = null;
+
+function measureLabelWidth(text: string, fontWeight = "650"): number {
+  if (!labelMeasureCtx) {
+    const canvas = document.createElement("canvas");
+    labelMeasureCtx = canvas.getContext("2d");
+  }
+  if (!labelMeasureCtx) return text.length * 10;
+  labelMeasureCtx.font = `${fontWeight} 15px "Plus Jakarta Sans", system-ui, sans-serif`;
+  return Math.ceil(labelMeasureCtx.measureText(text).width);
+}
+
+/** Grow foreignObject + shape so labels like "API Gateway" / "Redis" are not clipped. */
+function fitLabelBoxes(svg: SVGSVGElement) {
+  svg.querySelectorAll("g.node, g.cluster-label, g.label").forEach((g) => {
+    g.querySelectorAll("[clip-path]").forEach((el) => {
+      el.removeAttribute("clip-path");
+    });
+    (g as SVGElement).style.clipPath = "none";
+  });
+
+  const unclipHtml = (root: ParentNode) => {
+    root.querySelectorAll("div, span, p, a").forEach((node) => {
+      const el = node as HTMLElement;
+      el.style.overflow = "visible";
+      el.style.maxWidth = "none";
+      el.style.width = "max-content";
+      el.style.whiteSpace = "nowrap";
+      el.style.textOverflow = "clip";
+      el.style.display = "inline-block";
+    });
+  };
+
+  const growFo = (
+    fo: SVGForeignObjectElement,
+    padX: number,
+    padY: number,
+    weight: string,
+  ) => {
+    unclipHtml(fo);
+    fo.style.overflow = "visible";
+    const host =
+      (fo.querySelector(".nodeLabel") as HTMLElement | null) ||
+      (fo.querySelector("span") as HTMLElement | null) ||
+      (fo.querySelector("div") as HTMLElement | null);
+    if (!host) return { dw: 0, dh: 0 };
+
+    const text = (host.textContent || "").replace(/\s+/g, " ").trim();
+    const curW = Number(fo.getAttribute("width") || 0);
+    const curH = Number(fo.getAttribute("height") || 0);
+    const textW = measureLabelWidth(text, weight);
+    const needW = Math.max(textW + padX, Math.ceil(host.scrollWidth + padX));
+    const needH = Math.max(28, curH, Math.ceil(host.scrollHeight + padY));
+    const newW = Math.max(curW, needW);
+    const newH = Math.max(curH, needH);
+    const dw = newW - curW;
+    const dh = newH - curH;
+
+    const x = Number(fo.getAttribute("x") || 0);
+    const y = Number(fo.getAttribute("y") || 0);
+    fo.setAttribute("width", String(newW));
+    fo.setAttribute("height", String(newH));
+    if (dw > 0) fo.setAttribute("x", String(x - dw / 2));
+    if (dh > 0) fo.setAttribute("y", String(y - dh / 2));
+    return { dw, dh };
+  };
+
+  const growRect = (rect: SVGRectElement, dw: number, dh: number) => {
+    if (dw <= 0 && dh <= 0) return;
+    const x = rect.x.baseVal.value;
+    const y = rect.y.baseVal.value;
+    const w = rect.width.baseVal.value;
+    const h = rect.height.baseVal.value;
+    rect.setAttribute("x", String(x - dw / 2));
+    rect.setAttribute("y", String(y - dh / 2));
+    rect.setAttribute("width", String(w + dw));
+    rect.setAttribute("height", String(h + dh));
+  };
+
+  svg.querySelectorAll("g.node").forEach((node) => {
+    const g = node as SVGGElement;
+    const fo = g.querySelector("foreignObject") as SVGForeignObjectElement | null;
+    if (!fo) return;
+    const isCylinder = Boolean(g.querySelector(":scope > path"));
+    // Cylinders clip descenders — give the label cell extra height and nudge up.
+    const { dw, dh } = growFo(fo, 40, isCylinder ? 28 : 18, "650");
+    if (isCylinder) {
+      const y = Number(fo.getAttribute("y") || 0);
+      fo.setAttribute("y", String(y - 4));
+    }
+
+    g.querySelectorAll("rect").forEach((rectEl) => {
+      const rect = rectEl as SVGRectElement;
+      const h = rect.height.baseVal.value;
+      const w = rect.width.baseVal.value;
+      // Mermaid draws a thin "label chip" rect over the text — it looks like a cut cell.
+      if (h < 12 || (h < 20 && w < 80)) {
+        rect.setAttribute("opacity", "0");
+        rect.style.display = "none";
+        return;
+      }
+      growRect(rect, dw, dh);
+    });
+
+    // Cylinders use path outlines — scale horizontally around center when text is wider.
+    if (dw > 0) {
+      g.querySelectorAll(":scope > path").forEach((pathEl) => {
+        const path = pathEl as SVGPathElement;
+        try {
+          const bbox = path.getBBox();
+          if (!bbox.width) return;
+          const scaleX = (bbox.width + dw) / bbox.width;
+          const cx = bbox.x + bbox.width / 2;
+          const prev = path.getAttribute("transform") || "";
+          path.setAttribute(
+            "transform",
+            `${prev} translate(${cx} 0) scale(${scaleX} 1) translate(${-cx} 0)`.trim(),
+          );
+        } catch {
+          /* ignore detached geometry */
+        }
+      });
+    }
+  });
+
+  svg.querySelectorAll("g.cluster .cluster-label").forEach((label) => {
+    const fo = label.querySelector(
+      "foreignObject",
+    ) as SVGForeignObjectElement | null;
+    if (!fo) return;
+    const { dw, dh } = growFo(fo, 36, 12, "750");
+    label.querySelectorAll("rect").forEach((rect) => {
+      growRect(rect as SVGRectElement, dw, dh);
+    });
+  });
+}
+
 function enhanceRenderedSvg(root: HTMLElement, chartSource: string) {
   const svg = root.querySelector("svg");
   if (!svg) return;
@@ -310,6 +449,9 @@ function enhanceRenderedSvg(root: HTMLElement, chartSource: string) {
 
     g.dataset.archLayer = layer;
   });
+
+  // Expand label cells/shapes before size measurement so scale fits full text.
+  fitLabelBoxes(svg);
 }
 
 function clampZoom(n: number): number {

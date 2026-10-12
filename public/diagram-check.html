@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Seecog diagram check — :3000</title>
+    <style>
+      :root,
+      [data-theme="light"] {
+        color-scheme: light;
+        --bg: #f4f7fb;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --line: #cbd5e1;
+        --panel: #ffffff;
+        --accent: #2563eb;
+        --ok: #047857;
+        --err: #b91c1c;
+        --arch-clients-fill: #dbeafe;
+        --arch-clients-stroke: #2563eb;
+        --arch-clients-text: #1e3a8a;
+        --arch-api-fill: #ede9fe;
+        --arch-api-stroke: #7c3aed;
+        --arch-api-text: #4c1d95;
+        --arch-services-fill: #ccfbf1;
+        --arch-services-stroke: #0d9488;
+        --arch-services-text: #115e59;
+        --arch-data-fill: #ffedd5;
+        --arch-data-stroke: #ea580c;
+        --arch-data-text: #9a3412;
+        --arch-edge: #64748b;
+        --arch-label: #0f172a;
+        --arch-cluster-bg: rgba(15, 23, 42, 0.03);
+        --glow: #dbeafe;
+      }
+
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #0b1220;
+        --ink: #eaf2f7;
+        --muted: #94a3b8;
+        --line: #334155;
+        --panel: #121a22;
+        --accent: #60a5fa;
+        --ok: #34d399;
+        --err: #f87171;
+        --arch-clients-fill: #1e3a5f;
+        --arch-clients-stroke: #60a5fa;
+        --arch-clients-text: #dbeafe;
+        --arch-api-fill: #2e1065;
+        --arch-api-stroke: #a78bfa;
+        --arch-api-text: #ede9fe;
+        --arch-services-fill: #134e4a;
+        --arch-services-stroke: #2dd4bf;
+        --arch-services-text: #ccfbf1;
+        --arch-data-fill: #7c2d12;
+        --arch-data-stroke: #fb923c;
+        --arch-data-text: #ffedd5;
+        --arch-edge: #94a3b8;
+        --arch-label: #f1f5f9;
+        --arch-cluster-bg: rgba(15, 23, 42, 0.55);
+        --glow: #1e3a5f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(ellipse at top, var(--glow) 0%, transparent 50%),
+          var(--bg);
+        padding: 24px;
+      }
+      .header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 1.25rem;
+      }
+      .sub {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+      .theme-switch {
+        display: flex;
+        gap: 8px;
+      }
+      .theme-switch button {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 7px 14px;
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .theme-switch button[aria-pressed="true"] {
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+        background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 18px;
+      }
+      @media (min-width: 1100px) {
+        .grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      .viewer {
+        border: 1px solid color-mix(in srgb, var(--line) 85%, var(--accent));
+        border-radius: 14px;
+        background: var(--panel);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+        overflow: hidden;
+      }
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.78rem;
+        font-weight: 650;
+        color: var(--muted);
+      }
+      .preview {
+        padding: 16px;
+        overflow: auto;
+        min-height: 280px;
+        max-height: 70vh;
+      }
+      .waterfall {
+        clip-path: inset(0 0 100% 0);
+        width: fit-content;
+        margin: 0 auto;
+      }
+      .waterfall.on {
+        animation: waterfall 1.15s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+      @keyframes waterfall {
+        to {
+          clip-path: inset(0 0 0 0);
+        }
+      }
+      .status {
+        margin-top: 14px;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.err {
+        color: var(--err);
+      }
+      .stage svg {
+        display: block;
+        max-width: 100%;
+        height: auto;
+      }
+      .stage foreignObject {
+        overflow: visible !important;
+      }
+      .stage .nodeLabel,
+      .stage foreignObject div,
+      .stage foreignObject span {
+        font-size: 15px !important;
+        font-weight: 650 !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+        max-width: none !important;
+      }
+      .stage .cluster-label,
+      .stage .cluster-label span {
+        font-size: 15px !important;
+        font-weight: 750 !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+      }
+
+      /* Layer colors — mirror App.css arch-viewer */
+      .stage g.cluster[data-arch-layer="clients"] > rect {
+        fill: var(--arch-cluster-bg) !important;
+        stroke: var(--arch-clients-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="clients"] rect,
+      .stage g.node[data-arch-layer="clients"] .basic.label-container {
+        fill: var(--arch-clients-fill) !important;
+        stroke: var(--arch-clients-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="clients"] .nodeLabel,
+      .stage g.node[data-arch-layer="clients"] foreignObject span,
+      .stage g.cluster[data-arch-layer="clients"] .cluster-label,
+      .stage g.cluster[data-arch-layer="clients"] .cluster-label span {
+        color: var(--arch-clients-text) !important;
+      }
+
+      .stage g.cluster[data-arch-layer="api"] > rect {
+        fill: var(--arch-cluster-bg) !important;
+        stroke: var(--arch-api-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="api"] rect,
+      .stage g.node[data-arch-layer="api"] .basic.label-container {
+        fill: var(--arch-api-fill) !important;
+        stroke: var(--arch-api-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="api"] .nodeLabel,
+      .stage g.node[data-arch-layer="api"] foreignObject span,
+      .stage g.cluster[data-arch-layer="api"] .cluster-label,
+      .stage g.cluster[data-arch-layer="api"] .cluster-label span {
+        color: var(--arch-api-text) !important;
+      }
+
+      .stage g.cluster[data-arch-layer="services"] > rect {
+        fill: var(--arch-cluster-bg) !important;
+        stroke: var(--arch-services-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="services"] rect,
+      .stage g.node[data-arch-layer="services"] .basic.label-container {
+        fill: var(--arch-services-fill) !important;
+        stroke: var(--arch-services-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="services"] .nodeLabel,
+      .stage g.node[data-arch-layer="services"] foreignObject span,
+      .stage g.cluster[data-arch-layer="services"] .cluster-label,
+      .stage g.cluster[data-arch-layer="services"] .cluster-label span {
+        color: var(--arch-services-text) !important;
+      }
+
+      .stage g.cluster[data-arch-layer="data"] > rect {
+        fill: var(--arch-cluster-bg) !important;
+        stroke: var(--arch-data-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="data"] rect,
+      .stage g.node[data-arch-layer="data"] path,
+      .stage g.node[data-arch-layer="data"] .basic.label-container {
+        fill: var(--arch-data-fill) !important;
+        stroke: var(--arch-data-stroke) !important;
+      }
+      .stage g.node[data-arch-layer="data"] .nodeLabel,
+      .stage g.node[data-arch-layer="data"] foreignObject span,
+      .stage g.cluster[data-arch-layer="data"] .cluster-label,
+      .stage g.cluster[data-arch-layer="data"] .cluster-label span {
+        color: var(--arch-data-text) !important;
+      }
+
+      .stage .flowchart-link,
+      .stage path.flowchart-link {
+        stroke: var(--arch-edge) !important;
+        stroke-width: 2.35px !important;
+      }
+      .stage .nodeLabel,
+      .stage foreignObject span {
+        color: var(--arch-label) !important;
+        font-weight: 650 !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>Architecture diagram check</h1>
+        <p class="sub">
+          Port 3000 — verify TB stack + waterfall in <strong>light</strong> and
+          <strong>dark</strong> for visibility.
+        </p>
+      </div>
+      <div class="theme-switch" role="group" aria-label="Theme">
+        <button type="button" id="btn-light" aria-pressed="true">Light</button>
+        <button type="button" id="btn-dark" aria-pressed="false">Dark</button>
+        <button type="button" id="btn-both" aria-pressed="false">Both</button>
+      </div>
+    </div>
+
+    <div class="grid" id="grid">
+      <section class="viewer" data-panel="light" id="panel-light">
+        <div class="toolbar">
+          <span>Light · TB stack</span>
+          <span id="badge-light">…</span>
+        </div>
+        <div class="preview">
+          <div id="stage-light" class="stage waterfall"></div>
+        </div>
+      </section>
+      <section class="viewer" data-panel="dark" id="panel-dark" hidden>
+        <div class="toolbar">
+          <span>Dark · TB stack</span>
+          <span id="badge-dark">…</span>
+        </div>
+        <div class="preview">
+          <div id="stage-dark" class="stage waterfall"></div>
+        </div>
+      </section>
+    </div>
+    <p id="status" class="status">Loading Mermaid…</p>
+
+    <script src="/vendor/mermaid.min.js"></script>
+    <script>
+      const chart = `flowchart TB
+  subgraph clients["Clients"]
+    direction LR
+    RiderApp[Rider App]
+    DriverApp[Driver App]
+  end
+  subgraph edge["Edge and API"]
+    direction LR
+    Gateway[API Gateway]
+  end
+  subgraph domain["Domain Services"]
+    direction LR
+    TripSvc[Trip Service]
+    MatchSvc[Matching Service]
+  end
+  subgraph data["Data"]
+    direction LR
+    PrimaryDB[(Primary DB)]
+    Redis[(Redis)]
+  end
+  RiderApp --> Gateway
+  DriverApp --> Gateway
+  Gateway --> TripSvc
+  Gateway --> MatchSvc
+  TripSvc --> PrimaryDB
+  MatchSvc --> Redis`;
+
+      const LAYER_MATCHERS = [
+        { test: /client/i, layer: "clients" },
+        { test: /api|gateway|auth|edge/i, layer: "api" },
+        { test: /data|store|database|cache|redis/i, layer: "data" },
+        { test: /service|domain/i, layer: "services" },
+      ];
+
+      function detectLayer(text) {
+        for (const rule of LAYER_MATCHERS) {
+          if (rule.test.test(text)) return rule.layer;
+        }
+        return "services";
+      }
+
+      const measureCanvas = document.createElement("canvas").getContext("2d");
+      function measureLabelWidth(text, weight) {
+        if (!measureCanvas) return text.length * 10;
+        measureCanvas.font =
+          weight + ' 15px "Plus Jakarta Sans", system-ui, sans-serif';
+        return Math.ceil(measureCanvas.measureText(text).width);
+      }
+
+      function fitLabelBoxes(root) {
+        root.querySelectorAll("g.node, g.cluster-label, g.label").forEach((g) => {
+          g.querySelectorAll("[clip-path]").forEach((el) => el.removeAttribute("clip-path"));
+          g.style.clipPath = "none";
+        });
+        root.querySelectorAll("g.node foreignObject, .cluster-label foreignObject").forEach((fo) => {
+          fo.style.overflow = "visible";
+          fo.querySelectorAll("div, span, p").forEach((el) => {
+            el.style.overflow = "visible";
+            el.style.whiteSpace = "nowrap";
+            el.style.width = "max-content";
+            el.style.maxWidth = "none";
+            el.style.display = "inline-block";
+          });
+          const host = fo.querySelector(".nodeLabel, span, div");
+          if (!host) return;
+          const text = (host.textContent || "").replace(/\s+/g, " ").trim();
+          const curW = Number(fo.getAttribute("width") || 0);
+          const curH = Number(fo.getAttribute("height") || 0);
+          const node = fo.closest("g.node");
+          const isCylinder = !!(node && node.querySelector(":scope > path"));
+          const needW = Math.max(measureLabelWidth(text, "650") + 40, curW);
+          const needH = Math.max(curH, isCylinder ? 36 : 28);
+          const dw = needW - curW;
+          const dh = needH - curH;
+          fo.setAttribute("width", String(needW));
+          fo.setAttribute("height", String(needH));
+          if (dw) fo.setAttribute("x", String(Number(fo.getAttribute("x") || 0) - dw / 2));
+          if (dh) fo.setAttribute("y", String(Number(fo.getAttribute("y") || 0) - dh / 2));
+          if (isCylinder) {
+            fo.setAttribute("y", String(Number(fo.getAttribute("y") || 0) - 4));
+          }
+          if (!node) return;
+          node.querySelectorAll("rect").forEach((rect) => {
+            const h = Number(rect.getAttribute("height") || 0);
+            const w = Number(rect.getAttribute("width") || 0);
+            // Hide Mermaid's thin label-chip rect that cuts through the text.
+            if (h < 12 || (h < 20 && w < 80)) {
+              rect.setAttribute("opacity", "0");
+              rect.style.display = "none";
+              return;
+            }
+            rect.setAttribute("x", String(Number(rect.getAttribute("x") || 0) - dw / 2));
+            rect.setAttribute("y", String(Number(rect.getAttribute("y") || 0) - dh / 2));
+            rect.setAttribute("width", String(w + dw));
+            rect.setAttribute("height", String(h + dh));
+          });
+          if (dw > 0) {
+            node.querySelectorAll(":scope > path").forEach((path) => {
+              try {
+                const bbox = path.getBBox();
+                if (!bbox.width) return;
+                const scaleX = (bbox.width + dw) / bbox.width;
+                const cx = bbox.x + bbox.width / 2;
+                const prev = path.getAttribute("transform") || "";
+                path.setAttribute(
+                  "transform",
+                  (prev + " translate(" + cx + " 0) scale(" + scaleX + " 1) translate(" + -cx + " 0)").trim(),
+                );
+              } catch (_) {}
+            });
+          }
+        });
+      }
+
+      function colorize(root) {
+        root.querySelectorAll("g.cluster").forEach((g) => {
+          const title =
+            g.querySelector(".cluster-label")?.textContent?.trim() || "";
+          g.dataset.archLayer = detectLayer(title + " " + (g.id || ""));
+        });
+        root.querySelectorAll("g.node").forEach((g) => {
+          const label = g.textContent?.trim() || "";
+          const parent = g.closest("g.cluster");
+          g.dataset.archLayer =
+            parent?.dataset.archLayer || detectLayer(label + " " + (g.id || ""));
+        });
+        fitLabelBoxes(root);
+      }
+
+      function themeVars(dark) {
+        return dark
+          ? {
+              darkMode: true,
+              background: "transparent",
+              primaryColor: "#1e3a5f",
+              primaryTextColor: "#eaf2f7",
+              primaryBorderColor: "#60a5fa",
+              lineColor: "#94a3b8",
+              textColor: "#eaf2f7",
+              clusterBkg: "#121a22",
+              clusterBorder: "#334155",
+              titleColor: "#f1f5f9",
+              edgeLabelBackground: "#1e293b",
+              fontSize: "15px",
+              fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
+            }
+          : {
+              darkMode: false,
+              background: "transparent",
+              primaryColor: "#dbeafe",
+              primaryTextColor: "#0f172a",
+              primaryBorderColor: "#2563eb",
+              lineColor: "#64748b",
+              textColor: "#0f172a",
+              clusterBkg: "#f8fafc",
+              clusterBorder: "#cbd5e1",
+              titleColor: "#0f172a",
+              edgeLabelBackground: "#ffffff",
+              fontSize: "15px",
+              fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
+            };
+      }
+
+      async function renderInto(stageEl, dark, renderId) {
+        window.mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "loose",
+          theme: "base",
+          themeVariables: themeVars(dark),
+          flowchart: {
+            htmlLabels: true,
+            curve: "basis",
+            padding: 28,
+            nodeSpacing: 48,
+            rankSpacing: 72,
+            wrappingWidth: 280,
+            useMaxWidth: false,
+            defaultRenderer: "dagre-wrapper",
+          },
+        });
+        const { svg } = await window.mermaid.render(renderId, chart);
+        stageEl.innerHTML = svg;
+        colorize(stageEl);
+        stageEl.classList.remove("on");
+        void stageEl.offsetWidth;
+        requestAnimationFrame(() => stageEl.classList.add("on"));
+        return {
+          clusters: stageEl.querySelectorAll("g.cluster").length,
+          nodes: stageEl.querySelectorAll("g.node").length,
+        };
+      }
+
+      const status = document.getElementById("status");
+      const panelLight = document.getElementById("panel-light");
+      const panelDark = document.getElementById("panel-dark");
+      const btnLight = document.getElementById("btn-light");
+      const btnDark = document.getElementById("btn-dark");
+      const btnBoth = document.getElementById("btn-both");
+      const results = { light: null, dark: null };
+
+      function setPressed(mode) {
+        btnLight.setAttribute("aria-pressed", mode === "light" ? "true" : "false");
+        btnDark.setAttribute("aria-pressed", mode === "dark" ? "true" : "false");
+        btnBoth.setAttribute("aria-pressed", mode === "both" ? "true" : "false");
+      }
+
+      function applyPageTheme(mode) {
+        document.documentElement.setAttribute(
+          "data-theme",
+          mode === "dark" ? "dark" : "light",
+        );
+      }
+
+      function updateStatus() {
+        const parts = [];
+        if (results.light) {
+          parts.push(
+            "Light PASS (" +
+              results.light.clusters +
+              " layers / " +
+              results.light.nodes +
+              " nodes)",
+          );
+          document.getElementById("badge-light").textContent = "PASS";
+        }
+        if (results.dark) {
+          parts.push(
+            "Dark PASS (" +
+              results.dark.clusters +
+              " layers / " +
+              results.dark.nodes +
+              " nodes)",
+          );
+          document.getElementById("badge-dark").textContent = "PASS";
+        }
+        if (!parts.length) return;
+        status.className = "status ok";
+        status.textContent = parts.join(" · ");
+      }
+
+      async function showMode(mode) {
+        setPressed(mode);
+        if (mode === "both") {
+          applyPageTheme("light");
+          panelLight.hidden = false;
+          panelDark.hidden = false;
+          panelDark.setAttribute("data-theme", "dark");
+          panelDark.style.colorScheme = "dark";
+          // Force dark tokens on the dark panel even when page is light.
+          panelDark.style.setProperty("--bg", "#0b1220");
+          panelDark.style.setProperty("--ink", "#eaf2f7");
+          panelDark.style.setProperty("--muted", "#94a3b8");
+          panelDark.style.setProperty("--line", "#334155");
+          panelDark.style.setProperty("--panel", "#121a22");
+          panelDark.style.setProperty("--accent", "#60a5fa");
+          panelDark.style.setProperty("--arch-clients-fill", "#1e3a5f");
+          panelDark.style.setProperty("--arch-clients-stroke", "#60a5fa");
+          panelDark.style.setProperty("--arch-clients-text", "#dbeafe");
+          panelDark.style.setProperty("--arch-api-fill", "#2e1065");
+          panelDark.style.setProperty("--arch-api-stroke", "#a78bfa");
+          panelDark.style.setProperty("--arch-api-text", "#ede9fe");
+          panelDark.style.setProperty("--arch-services-fill", "#134e4a");
+          panelDark.style.setProperty("--arch-services-stroke", "#2dd4bf");
+          panelDark.style.setProperty("--arch-services-text", "#ccfbf1");
+          panelDark.style.setProperty("--arch-data-fill", "#7c2d12");
+          panelDark.style.setProperty("--arch-data-stroke", "#fb923c");
+          panelDark.style.setProperty("--arch-data-text", "#ffedd5");
+          panelDark.style.setProperty("--arch-edge", "#94a3b8");
+          panelDark.style.setProperty("--arch-label", "#f1f5f9");
+          panelDark.style.setProperty("--arch-cluster-bg", "rgba(15, 23, 42, 0.55)");
+          panelDark.style.background = "#121a22";
+        } else if (mode === "dark") {
+          applyPageTheme("dark");
+          panelLight.hidden = true;
+          panelDark.hidden = false;
+          panelDark.removeAttribute("style");
+        } else {
+          applyPageTheme("light");
+          panelLight.hidden = false;
+          panelDark.hidden = true;
+          panelDark.removeAttribute("style");
+        }
+
+        try {
+          if (!window.mermaid) throw new Error("mermaid global missing");
+          if (!panelLight.hidden && !results.light) {
+            results.light = await renderInto(
+              document.getElementById("stage-light"),
+              false,
+              "checkLight",
+            );
+          } else if (!panelLight.hidden) {
+            document.getElementById("stage-light").classList.add("on");
+          }
+          if (!panelDark.hidden && !results.dark) {
+            results.dark = await renderInto(
+              document.getElementById("stage-dark"),
+              true,
+              "checkDark",
+            );
+          } else if (!panelDark.hidden) {
+            document.getElementById("stage-dark").classList.add("on");
+          }
+          // Re-render when switching so themeVariables match visibility.
+          if (mode === "light") {
+            results.light = await renderInto(
+              document.getElementById("stage-light"),
+              false,
+              "checkLight" + Date.now(),
+            );
+          }
+          if (mode === "dark") {
+            results.dark = await renderInto(
+              document.getElementById("stage-dark"),
+              true,
+              "checkDark" + Date.now(),
+            );
+          }
+          if (mode === "both") {
+            results.light = await renderInto(
+              document.getElementById("stage-light"),
+              false,
+              "checkLightBoth" + Date.now(),
+            );
+            results.dark = await renderInto(
+              document.getElementById("stage-dark"),
+              true,
+              "checkDarkBoth" + Date.now(),
+            );
+          }
+          updateStatus();
+        } catch (err) {
+          status.className = "status err";
+          status.textContent =
+            "FAIL — " + (err && err.message ? err.message : String(err));
+        }
+      }
+
+      btnLight.addEventListener("click", () => showMode("light"));
+      btnDark.addEventListener("click", () => showMode("dark"));
+      btnBoth.addEventListener("click", () => showMode("both"));
+
+      // Default: both modes so visibility can be compared immediately.
+      showMode("both");
+    </script>
+  </body>
+</html>

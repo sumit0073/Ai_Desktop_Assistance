@@ -1,6 +1,6 @@
 /** Local-only demo account — not a real Supabase user. */
 export const DEMO_CREDENTIALS = {
-  email: "demo@seecog.app",
+  email: "demo@systembunny.app",
   password: "Demo@1234",
   fullName: "Demo User",
   userId: "demo-user",

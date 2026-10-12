@@ -1,4 +1,4 @@
-# Builds Seecog as downloadable Windows installers (.exe NSIS + .msi)
+# Builds System Bunny as downloadable Windows installers (.exe NSIS + .msi)
 # and attaches them to a GitHub Release — similar to sharing an Android APK.
 #
 # Trigger: Actions → "Build Windows Installer" → Run workflow
@@ -86,7 +86,7 @@ jobs:
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Seecog-Windows-x64
+          name: SystemBunny-Windows-x64
           # Directory path string (not a YAML/JS array)
           path: dist-win
           if-no-files-found: error
@@ -108,7 +108,7 @@ jobs:
       - name: Download Windows installers
         uses: actions/download-artifact@v4
         with:
-          name: Seecog-Windows-x64
+          name: SystemBunny-Windows-x64
           path: dist-win
 
       - name: List release files
@@ -118,7 +118,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.ver.outputs.version }}
-          name: Seecog v${{ steps.ver.outputs.version }}
+          name: System Bunny v${{ steps.ver.outputs.version }}
           body: |
             Download an installer below for your platform.
 

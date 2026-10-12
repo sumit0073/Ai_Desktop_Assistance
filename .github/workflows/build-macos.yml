@@ -1,4 +1,4 @@
-# Builds Seecog as downloadable macOS .dmg files (Apple Silicon + Intel)
+# Builds System Bunny as downloadable macOS .dmg files (Apple Silicon + Intel)
 # and attaches them to a GitHub Release — similar to sharing an Android APK.
 #
 # Trigger: Actions → "Build macOS DMG" → Run workflow
@@ -94,7 +94,7 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Seecog-macOS-${{ matrix.arch }}
+          name: SystemBunny-macOS-${{ matrix.arch }}
           # Single path string (not a YAML array) — avoids path/type mismatches
           path: ${{ steps.dmg.outputs.path }}
           if-no-files-found: error
@@ -116,7 +116,7 @@ jobs:
       - name: Download all DMG artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: Seecog-macOS-*
+          pattern: SystemBunny-macOS-*
           path: dist-dmg
           merge-multiple: true
 
@@ -127,7 +127,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.ver.outputs.version }}
-          name: Seecog v${{ steps.ver.outputs.version }}
+          name: System Bunny v${{ steps.ver.outputs.version }}
           body: |
             Download a `.dmg` below and open it on your Mac.
 

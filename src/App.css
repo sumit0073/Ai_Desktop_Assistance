@@ -12,9 +12,54 @@
     linear-gradient(160deg, var(--bg-b), var(--bg-a));
 }
 
-/* During a live session: fully clear so Zoom / desktop show through */
+/* Dense session glass: faint background silhouette only, not readable detail */
 .app-root.session-active {
   background: transparent;
+  --glass: rgba(248, 251, 253, 0.93);
+  --glass-strong: rgba(250, 252, 253, 0.97);
+  --bubble-assistant: rgba(255, 255, 255, 0.96);
+  --input: rgba(255, 255, 255, 0.96);
+}
+
+[data-theme="dark"] .app-root.session-active {
+  --glass: rgba(10, 20, 28, 0.93);
+  --glass-strong: rgba(10, 20, 28, 0.97);
+  --bubble-assistant: rgba(255, 255, 255, 0.14);
+  --input: rgba(255, 255, 255, 0.14);
+}
+
+/* Send: solid, high-contrast CTA on dense glass */
+.app-root.session-active .chat-composer .btn-primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, #000);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+    0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent),
+    0 14px 32px color-mix(in srgb, var(--accent) 55%, transparent);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  opacity: 1;
+  filter: saturate(1.15) brightness(1.05);
+}
+
+.app-root.session-active .chat-composer .btn-primary:not(:disabled):hover {
+  filter: saturate(1.2) brightness(1.12);
+}
+
+.app-root.session-active .chat-composer .btn-primary:disabled {
+  opacity: 0.5;
+  filter: none;
+  box-shadow: none;
+}
+
+.app-root.session-active .chat-glass {
+  backdrop-filter: blur(28px) saturate(1.15);
+  -webkit-backdrop-filter: blur(28px) saturate(1.15);
+}
+
+.app-root.session-active .chat-composer {
+  background: color-mix(in srgb, var(--glass-strong) 96%, var(--panel-solid));
 }
 
 .floating-card {
@@ -227,32 +272,34 @@
 }
 
 .start-logo {
-  width: clamp(72px, 14vw, 110px);
-  height: clamp(72px, 14vw, 110px);
-  margin: 0 0 4px;
-  border-radius: 28px;
+  /* Brand mark, not a second hero — keep below greeting + Start button weight */
+  width: clamp(64px, 11vw, 84px);
+  height: clamp(64px, 11vw, 84px);
+  margin: 0 0 2px;
   display: grid;
   place-items: center;
-  border: 1px dashed color-mix(in srgb, var(--ink) 12%, transparent);
-  background:
-    radial-gradient(
-      circle at 35% 30%,
-      color-mix(in srgb, var(--accent) 14%, transparent),
-      transparent 62%
-    ),
-    color-mix(in srgb, var(--ink) 3%, transparent);
-  opacity: 0.55;
   pointer-events: none;
   user-select: none;
+  opacity: 0.82;
+  filter: drop-shadow(0 8px 18px color-mix(in srgb, var(--accent) 14%, transparent));
 }
 
-.start-logo__mark {
-  font-family: inherit;
-  font-weight: 800;
-  font-size: clamp(2rem, 5vw, 2.8rem);
-  letter-spacing: -0.06em;
-  color: color-mix(in srgb, var(--ink) 28%, var(--accent));
-  line-height: 1;
+.start-logo__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 28px;
+  mix-blend-mode: multiply;
+}
+
+[data-theme="dark"] .start-logo {
+  opacity: 0.88;
+  filter: drop-shadow(0 10px 28px rgba(0, 0, 0, 0.35));
+}
+
+[data-theme="dark"] .start-logo__img {
+  mix-blend-mode: screen;
+  opacity: 0.9;
 }
 
 .start-screen__content .tagline {
@@ -400,6 +447,20 @@
   background: var(--accent-soft);
   color: var(--accent);
   border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.brand-mark--logo {
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
+}
+
+.brand-mark--logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .brand-mark__glyph {
@@ -1808,17 +1869,25 @@
   width: 100%;
 }
 
-/* Typography */
+/* Typography — keep sizes ≤ Mermaid themeVariables.fontSize or labels clip. */
+.arch-viewer foreignObject {
+  overflow: visible !important;
+}
+
 .arch-viewer .nodeLabel,
 .arch-viewer .node .label,
 .arch-viewer foreignObject div,
 .arch-viewer foreignObject span,
 .arch-viewer foreignObject p {
-  font-size: 16px !important;
-  line-height: 1.35 !important;
+  font-size: 15px !important;
+  line-height: 1.3 !important;
   font-weight: 650 !important;
   color: var(--arch-label) !important;
   -webkit-text-fill-color: var(--arch-label) !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+  max-width: none !important;
 }
 
 .arch-viewer .cluster-label,
@@ -1826,23 +1895,25 @@
 .arch-viewer .cluster-label foreignObject div,
 .arch-viewer .cluster-label foreignObject span,
 .arch-viewer .cluster-label text {
-  font-size: 18px !important;
+  font-size: 15px !important;
   font-weight: 750 !important;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   color: var(--arch-label) !important;
   fill: var(--arch-label) !important;
+  overflow: visible !important;
+  white-space: nowrap !important;
 }
 
 .arch-viewer .edgeLabel,
 .arch-viewer .edgeLabel span {
-  font-size: 13px !important;
+  font-size: 12px !important;
   font-weight: 600 !important;
 }
 
 .arch-viewer svg text,
 .arch-viewer svg tspan {
   fill: var(--arch-label) !important;
-  font-size: 16px !important;
+  font-size: 15px !important;
 }
 
 .arch-viewer .flowchart-link,

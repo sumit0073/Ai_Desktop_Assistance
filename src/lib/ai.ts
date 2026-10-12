@@ -50,7 +50,7 @@ const DEFAULT_TEXT_MODEL = "openai/gpt-oss-20b";
 /** Free-tier chat model that accepts images. */
 const DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b";
 
-const SYSTEM_PROMPT = `You are Seecog, a desktop AI assistant for focus sessions and system design.
+const SYSTEM_PROMPT = `You are System Bunny, a desktop AI assistant for focus sessions and system design.
 
 Style rules (ChatGPT-like):
 - Use clean Markdown: short headings, bold key terms, bullet lists when helpful.
@@ -106,7 +106,7 @@ function buildArchitectureSystemPrompt(detail: ArchitectureDetail): string {
 - Optimize for clarity: clients, entry points, major services, primary DBs/caches, messaging/realtime when relevant, external integrations, main request/data flows
 - Prefer a readable overview over exhaustive infrastructure`;
 
-  return `You are Seecog Architecture — a senior software architect helping design clear system architectures.
+  return `You are System Bunny Architecture — a senior software architect helping design clear system architectures.
 
 Understand the requested system before drawing. Identify clients, entry points, application/domain services, databases, caches, messaging, external integrations, and infrastructure only when relevant.
 Distinguish synchronous request/response from asynchronous event flows.

@@ -4,6 +4,7 @@ import { SignupPage } from "../pages/SignupPage";
 import { AuthTabs } from "./AuthTabs";
 import { ThemeToggle } from "./ThemeToggle";
 import { WindowControls } from "./WindowControls";
+import bunnyLogo from "../assets/system-bunny-logo.png";
 
 type AuthView = "login" | "signup";
 
@@ -20,8 +21,8 @@ export function LandingPage() {
   return (
     <div className={`shell landing landing--${view}`}>
       <header className="topbar" data-tauri-drag-region>
-        <div className="brand-mark" aria-hidden="true">
-          <span className="brand-mark__glyph">S</span>
+        <div className="brand-mark brand-mark--logo" aria-hidden="true">
+          <img src={bunnyLogo} alt="" draggable={false} />
         </div>
         <div className="topbar__actions">
           <ThemeToggle />
@@ -32,7 +33,7 @@ export function LandingPage() {
       <main className="landing__content">
         <section className="hero-copy">
           <p className="eyebrow">Desktop overlay</p>
-          <h1 className="brand-title">Seecog</h1>
+          <h1 className="brand-title">System Bunny</h1>
           {view === "login" && (
             <p className="tagline">
               Stay on the problem. Ask sharp questions, get clear answers —
