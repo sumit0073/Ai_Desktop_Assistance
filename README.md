@@ -78,3 +78,20 @@ The window stays **resizable** and **movable** (drag the top bar).
 | `npm run dev` | Vite frontend only |
 | `npm run tauri:dev` | Full Tauri desktop app |
 | `npm run tauri:build` | Production installer build |
+| `npm run tauri:build:mac` | macOS `.dmg` bundle (must run on a Mac) |
+
+## Download for Mac (DMG)
+
+A real `.dmg` cannot be built on Windows. This repo uses **GitHub Actions** on a Mac runner.
+
+1. Open [Actions → Build macOS DMG](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-macos.yml)
+2. Click **Run workflow** → **Run workflow**
+3. When it finishes, download from:
+   - **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
+   - or the workflow run **Artifacts**
+
+Optional (so the built app has working auth/AI): add repository secrets  
+`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`  
+under **Settings → Secrets and variables → Actions**.
+
+On first launch, macOS may block the unsigned build: right-click the app → **Open**.

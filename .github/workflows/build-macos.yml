@@ -1,0 +1,98 @@
+# Builds Seecog as downloadable macOS .dmg files (Apple Silicon + Intel)
+# and attaches them to a GitHub Release — similar to sharing an Android APK.
+#
+# Trigger: Actions → "Build macOS DMG" → Run workflow
+# Download: repo Releases page, or the workflow run Artifacts
+
+name: Build macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-macos:
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - args: "--target aarch64-apple-darwin"
+            arch: aarch64
+            label: "Apple Silicon (M1/M2/M3/M4)"
+          - args: "--target x86_64-apple-darwin"
+            arch: x86_64
+            label: "Intel Mac"
+
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Create frontend env for Vite build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
+          VITE_GROQ_MODEL: ${{ vars.VITE_GROQ_MODEL }}
+          VITE_GROQ_VISION_MODEL: ${{ vars.VITE_GROQ_VISION_MODEL }}
+        run: |
+          {
+            echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-}"
+            echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-}"
+            echo "VITE_GROQ_API_KEY=${VITE_GROQ_API_KEY:-}"
+            echo "VITE_GROQ_MODEL=${VITE_GROQ_MODEL:-openai/gpt-oss-20b}"
+            echo "VITE_GROQ_VISION_MODEL=${VITE_GROQ_VISION_MODEL:-qwen/qwen3.8-27b}"
+          } > .env
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish macOS DMG
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ad-hoc signing so Apple Silicon builds are not marked "damaged"
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          tagName: app-v__VERSION__
+          releaseName: "Seecog v__VERSION__"
+          releaseBody: |
+            Download a `.dmg` below and open it on your Mac.
+
+            - **Apple Silicon** (M1/M2/M3/M4): file name contains `aarch64`
+            - **Intel Mac**: file name contains `x64` or `x86_64`
+
+            First open: right-click the app → **Open** (unsigned / ad-hoc signed build).
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Seecog-macOS-${{ matrix.arch }}
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/macos/*.app
+          if-no-files-found: warn
