@@ -79,19 +79,31 @@ The window stays **resizable** and **movable** (drag the top bar).
 | `npm run tauri:dev` | Full Tauri desktop app |
 | `npm run tauri:build` | Production installer build |
 | `npm run tauri:build:mac` | macOS `.dmg` bundle (must run on a Mac) |
+| `npm run tauri:build:win` | Windows NSIS `.exe` + WiX `.msi` |
 
-## Download for Mac (DMG)
+## Download installers (GitHub Actions)
 
-A real `.dmg` cannot be built on Windows. This repo uses **GitHub Actions** on a Mac runner.
+Optional (so built apps have working auth/AI): add repository secrets  
+`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`  
+under **Settings → Secrets and variables → Actions**.
+
+Installers appear on **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
+(or as workflow **Artifacts**).
+
+### Windows (EXE / MSI)
+
+1. Open [Actions → Build Windows Installer](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-windows.yml)
+2. Click **Run workflow** → **Run workflow**
+3. Download the **NSIS `.exe`** (recommended) or **`.msi`**
+
+Requires WebView2 (usually already on Windows 10/11).
+
+### Mac (DMG)
+
+A real `.dmg` must be built on a Mac runner.
 
 1. Open [Actions → Build macOS DMG](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-macos.yml)
 2. Click **Run workflow** → **Run workflow**
-3. When it finishes, download from:
-   - **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
-   - or the workflow run **Artifacts**
-
-Optional (so the built app has working auth/AI): add repository secrets  
-`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`  
-under **Settings → Secrets and variables → Actions**.
+3. Download the `.dmg` for Apple Silicon (`aarch64`) or Intel (`x64`)
 
 On first launch, macOS may block the unsigned build: right-click the app → **Open**.

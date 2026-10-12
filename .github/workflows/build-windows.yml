@@ -1,0 +1,141 @@
+# Builds Seecog as downloadable Windows installers (.exe NSIS + .msi)
+# and attaches them to a GitHub Release — similar to sharing an Android APK.
+#
+# Trigger: Actions → "Build Windows Installer" → Run workflow
+# Download: repo Releases page, or the workflow run Artifacts
+
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    permissions:
+      contents: read
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: windows-x64
+
+      - name: Create frontend env for Vite build
+        shell: bash
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
+          VITE_GROQ_MODEL: ${{ vars.VITE_GROQ_MODEL }}
+          VITE_GROQ_VISION_MODEL: ${{ vars.VITE_GROQ_VISION_MODEL }}
+        run: |
+          {
+            echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-}"
+            echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-}"
+            echo "VITE_GROQ_API_KEY=${VITE_GROQ_API_KEY:-}"
+            echo "VITE_GROQ_MODEL=${VITE_GROQ_MODEL:-openai/gpt-oss-20b}"
+            echo "VITE_GROQ_VISION_MODEL=${VITE_GROQ_VISION_MODEL:-qwen/qwen3.8-27b}"
+          } > .env
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Windows installers (NSIS + MSI)
+        # Pass args after `--` so npm forwards a normal string argv to the tauri CLI.
+        # nsis → setup .exe; msi → WiX .msi
+        run: npm run tauri -- build --bundles nsis,msi
+
+      - name: Stage installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-win | Out-Null
+          $nsis = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          $msi = Get-ChildItem -Path "src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          if (-not $nsis -and -not $msi) {
+            Write-Error "No Windows installer found under src-tauri/target/release/bundle/{nsis,msi}/"
+            Get-ChildItem -Recurse "src-tauri/target/release/bundle" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+            exit 1
+          }
+          if ($nsis) {
+            Copy-Item $nsis.FullName -Destination dist-win/
+            Write-Host "Staged NSIS: $($nsis.Name)"
+          }
+          if ($msi) {
+            Copy-Item $msi.FullName -Destination dist-win/
+            Write-Host "Staged MSI: $($msi.Name)"
+          }
+          Get-ChildItem dist-win | Format-Table Name, Length
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Seecog-Windows-x64
+          # Directory path string (not a YAML/JS array)
+          path: dist-win
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read app version
+        id: ver
+        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows installers
+        uses: actions/download-artifact@v4
+        with:
+          name: Seecog-Windows-x64
+          path: dist-win
+
+      - name: List release files
+        run: find dist-win -type f \( -name '*.exe' -o -name '*.msi' \) -print
+
+      - name: Create or update GitHub Release with Windows installers
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-v${{ steps.ver.outputs.version }}
+          name: Seecog v${{ steps.ver.outputs.version }}
+          body: |
+            Download an installer below for your platform.
+
+            ### Windows
+            - **Setup (.exe)** — NSIS installer (recommended)
+            - **MSI** — WiX installer for enterprise / silent deploy
+
+            ### macOS
+            Run **Build macOS DMG** (or wait for that workflow) for `.dmg` assets on the same release tag.
+
+            WebView2 is required on Windows (usually preinstalled on Windows 10/11).
+          # Glob string — softprops accepts newline/space-separated globs, not a JS array
+          files: |
+            dist-win/*.exe
+            dist-win/*.msi
+          fail_on_unmatched_files: false
+          generate_release_notes: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

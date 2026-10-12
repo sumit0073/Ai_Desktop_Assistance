@@ -12,7 +12,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:mac": "tauri build --bundles dmg"
+    "tauri:build:mac": "tauri build --bundles dmg",
+    "tauri:build:win": "tauri build --bundles nsis,msi"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",
