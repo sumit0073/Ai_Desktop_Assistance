@@ -1,0 +1,59 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
+import { endAppSession, startAppSession } from "../lib/appSessions";
+import { useAuth } from "./AuthContext";
+
+type WorkSessionContextValue = {
+  active: boolean;
+  startSession: () => Promise<void>;
+  stopSession: () => Promise<void>;
+};
+
+const WorkSessionContext = createContext<WorkSessionContextValue | null>(null);
+
+export function WorkSessionProvider({ children }: { children: ReactNode }) {
+  const { user, emailVerified } = useAuth();
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    if (!user) setActive(false);
+  }, [user]);
+
+  useEffect(() => {
+    if (!emailVerified) setActive(false);
+  }, [emailVerified]);
+
+  const startSession = useCallback(async () => {
+    if (!user || !emailVerified) return;
+    if (user.id !== "demo-user") {
+      await startAppSession(user.id);
+    }
+    setActive(true);
+  }, [user, emailVerified]);
+
+  const stopSession = useCallback(async () => {
+    await endAppSession();
+    // Return to the Start screen — do not hide/close the window.
+    setActive(false);
+  }, []);
+
+  return (
+    <WorkSessionContext.Provider value={{ active, startSession, stopSession }}>
+      {children}
+    </WorkSessionContext.Provider>
+  );
+}
+
+export function useWorkSession() {
+  const ctx = useContext(WorkSessionContext);
+  if (!ctx) {
+    throw new Error("useWorkSession must be used within WorkSessionProvider");
+  }
+  return ctx;
+}

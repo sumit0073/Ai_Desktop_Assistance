@@ -1,0 +1,14 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "skipTaskbar": true,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "contentProtected": true
+      }
+    ]
+  }
+}

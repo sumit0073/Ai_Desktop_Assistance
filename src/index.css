@@ -1,0 +1,117 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap");
+
+:root,
+[data-theme="light"] {
+  --bg-a: #d9e6f2;
+  --bg-b: #eef4f8;
+  --bg-c: #c5ddd4;
+  --panel: rgba(255, 255, 255, 0.42);
+  --panel-solid: rgba(255, 255, 255, 0.62);
+  --glass: rgba(248, 251, 253, 0.28);
+  --glass-strong: rgba(248, 251, 253, 0.55);
+  --panel-edge: rgba(15, 35, 48, 0.12);
+  --ink: #102433;
+  --ink-soft: #3d5566;
+  --muted: #5f7383;
+  --line: rgba(16, 36, 51, 0.12);
+  --accent: #0c6b5c;
+  --accent-ink: #f4fbf9;
+  --accent-soft: rgba(12, 107, 92, 0.14);
+  --danger: #b42318;
+  --notice: #1f6b45;
+  --shadow: 0 28px 60px rgba(16, 36, 51, 0.16);
+  --bubble-user: rgba(12, 107, 92, 0.12);
+  --bubble-assistant: rgba(255, 255, 255, 0.55);
+  --input: rgba(255, 255, 255, 0.7);
+  --tab-track: rgba(16, 36, 51, 0.07);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg-a: #0a141c;
+  --bg-b: #12222d;
+  --bg-c: #163029;
+  --panel: rgba(18, 30, 38, 0.58);
+  --panel-solid: rgba(18, 30, 38, 0.78);
+  --glass: rgba(12, 22, 30, 0.32);
+  --glass-strong: rgba(12, 22, 30, 0.58);
+  --panel-edge: rgba(220, 232, 240, 0.14);
+  --ink: #eaf2f7;
+  --ink-soft: #b7c7d2;
+  --muted: #8ea3b2;
+  --line: rgba(220, 232, 240, 0.12);
+  --accent: #3dbaa0;
+  --accent-ink: #062019;
+  --accent-soft: rgba(61, 186, 160, 0.16);
+  --danger: #f2a0a0;
+  --notice: #8fd6a8;
+  --shadow: 0 28px 60px rgba(0, 0, 0, 0.45);
+  --bubble-user: rgba(61, 186, 160, 0.16);
+  --bubble-assistant: rgba(255, 255, 255, 0.06);
+  --input: rgba(255, 255, 255, 0.07);
+  --tab-track: rgba(220, 232, 240, 0.08);
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  cursor: default !important;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Plus Jakarta Sans", sans-serif;
+  color: var(--ink);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+input,
+textarea,
+select,
+a,
+a:hover,
+a:active,
+a:focus,
+[role="button"],
+[role="link"],
+label,
+summary {
+  cursor: default !important;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+
+/* Hide scrollbars while keeping scroll where explicitly allowed */
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
