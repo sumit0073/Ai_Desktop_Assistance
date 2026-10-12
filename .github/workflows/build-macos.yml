@@ -14,27 +14,28 @@ on:
 
 jobs:
   build-macos:
+    name: Build ${{ matrix.label }}
     permissions:
-      contents: write
+      contents: read
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - args: "--target aarch64-apple-darwin"
+          - target: aarch64-apple-darwin
             arch: aarch64
-            label: "Apple Silicon (M1/M2/M3/M4)"
-          - args: "--target x86_64-apple-darwin"
+            label: Apple Silicon
+          - target: x86_64-apple-darwin
             arch: x86_64
-            label: "Intel Mac"
+            label: Intel Mac
 
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: lts/*
           cache: npm
@@ -42,12 +43,13 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          key: ${{ matrix.target }}
 
       - name: Create frontend env for Vite build
         env:
@@ -68,31 +70,75 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and publish macOS DMG
-        uses: tauri-apps/tauri-action@v1
+      - name: Build macOS DMG
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Ad-hoc signing so Apple Silicon builds are not marked "damaged"
           APPLE_SIGNING_IDENTITY: "-"
+        # Pass args after `--` so npm forwards a string argv to the tauri CLI
+        # (not a nested JS array). Only bundle dmg for downloadable installers.
+        run: npm run tauri -- build --target "${{ matrix.target }}" --bundles dmg
+
+      - name: Locate DMG
+        id: dmg
+        run: |
+          shopt -s nullglob
+          files=(src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No DMG found under src-tauri/target/${{ matrix.target }}/release/bundle/dmg/"
+            find src-tauri/target -name '*.dmg' -print || true
+            exit 1
+          fi
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+          echo "Found DMG: ${files[0]}"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
         with:
-          tagName: app-v__VERSION__
-          releaseName: "Seecog v__VERSION__"
-          releaseBody: |
+          name: Seecog-macOS-${{ matrix.arch }}
+          # Single path string (not a YAML array) — avoids path/type mismatches
+          path: ${{ steps.dmg.outputs.path }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read app version
+        id: ver
+        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all DMG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Seecog-macOS-*
+          path: dist-dmg
+          merge-multiple: true
+
+      - name: List release files
+        run: find dist-dmg -type f -name '*.dmg' -print
+
+      - name: Create GitHub Release with DMGs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-v${{ steps.ver.outputs.version }}
+          name: Seecog v${{ steps.ver.outputs.version }}
+          body: |
             Download a `.dmg` below and open it on your Mac.
 
             - **Apple Silicon** (M1/M2/M3/M4): file name contains `aarch64`
             - **Intel Mac**: file name contains `x64` or `x86_64`
 
             First open: right-click the app → **Open** (unsigned / ad-hoc signed build).
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
-
-      - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Seecog-macOS-${{ matrix.arch }}
-          path: |
-            src-tauri/target/**/release/bundle/dmg/*.dmg
-            src-tauri/target/**/release/bundle/macos/*.app
-          if-no-files-found: warn
+          # Glob string (not a YAML/JS array) — softprops splits on newlines/spaces
+          files: dist-dmg/*.dmg
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
