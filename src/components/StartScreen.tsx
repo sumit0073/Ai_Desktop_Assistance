@@ -17,7 +17,7 @@ export function StartScreen() {
     <div className="shell start-screen">
       <header className="topbar" data-tauri-drag-region>
         <div className="brand-mark" aria-hidden="true">
-          <span className="brand-mark__glyph">S</span>
+          <span className="brand-mark__glyph">B</span>
         </div>
         <div className="topbar__actions">
           <ThemeToggle />
@@ -30,7 +30,7 @@ export function StartScreen() {
         <p className="eyebrow">Ready when you are</p>
         <h1 className="brand-title">Hi, {name}</h1>
         <p className="tagline">
-          Start a focus session to open chat. Use Ctrl/⌘+A to hide or show the
+          Start a focus session to open chat. Use Ctrl/⌘+Shift+A to hide or show the
           overlay. Close quits the app.
         </p>
 

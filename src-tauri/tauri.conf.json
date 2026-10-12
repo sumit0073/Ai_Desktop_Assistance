@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Seecog",
+  "productName": "System Bunny",
   "version": "0.1.0",
-  "identifier": "com.seecog.ai-desktop-assistant",
+  "identifier": "com.systembunny.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Seecog",
+        "title": "System Bunny",
         "width": 960,
         "height": 720,
         "minWidth": 420,
@@ -28,6 +28,7 @@
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
+        "visibleOnAllWorkspaces": true,
         "contentProtected": true,
         "center": true,
         "shadow": false,

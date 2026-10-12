@@ -22,7 +22,7 @@ const STARTER: ChatMessage = {
   id: "welcome",
   role: "assistant",
   content:
-    "Shortcuts: Ctrl/⌘+A hides or shows this window · Ctrl/⌘+H captures the screen · Ctrl/⌘+G asks the AI (or clears if empty) · Shift+↑/↓ scrolls chat · Ctrl/⌘+arrows move the window. Close quits the app.",
+    "Shortcuts: Ctrl/⌘+Shift+A hides or shows this window · Ctrl/⌘+H captures the screen · Ctrl/⌘+G asks the AI (or clears if empty) · Shift+↑/↓ scrolls chat · Ctrl/⌘+arrows move the window. Close quits the app.",
 };
 
 function screenshotDataUrl(base64: string): string {
@@ -237,7 +237,7 @@ export function ChatInterface() {
               Stop
             </button>
             <div className="chat-heading">
-              <h1>Seecog</h1>
+              <h1>System Bunny</h1>
               <p>{user?.email ?? "Session active"}</p>
             </div>
           </div>
@@ -250,7 +250,7 @@ export function ChatInterface() {
 
         <div className="shortcut-bar" data-tauri-drag-region>
           <span>
-            <kbd>{modLabel}</kbd>+<kbd>A</kbd> hide/show
+            <kbd>{modLabel}</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> hide/show
           </span>
           <span>
             <kbd>{modLabel}</kbd>+<kbd>H</kbd> capture
@@ -343,7 +343,7 @@ export function ChatInterface() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={`Ask Seecog… (${modLabel}+G)`}
+            placeholder={`Ask System Bunny… (${modLabel}+G)`}
             aria-label="Message"
           />
           <button

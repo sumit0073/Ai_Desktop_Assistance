@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -6,6 +7,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use xcap::Monitor;
+
+/// True only after the user intentionally hid the overlay (⌘/Ctrl+A).
+/// Prevents “restore” from being treated as “hide” when Chrome steals focus
+/// but macOS still reports the window as visible.
+static OVERLAY_USER_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,8 +44,16 @@ fn toggle_window_visibility(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or_else(|| "Main window not found".to_string())?;
 
-    if window.is_visible().map_err(|e| e.to_string())? {
+    let user_hidden = OVERLAY_USER_HIDDEN.load(Ordering::SeqCst);
+    let visible = window.is_visible().unwrap_or(false);
+    let focused = window.is_focused().unwrap_or(false);
+
+    // Only hide when the overlay is actually frontmost. If Chrome (or another
+    // app) stole focus, the window may still report visible=true while the user
+    // cannot see it — in that case restore instead of hiding again.
+    if !user_hidden && visible && focused {
         window.hide().map_err(|e| e.to_string())?;
+        OVERLAY_USER_HIDDEN.store(true, Ordering::SeqCst);
     } else {
         restore_main_window(app)?;
     }
@@ -52,12 +66,27 @@ fn restore_main_window(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or_else(|| "Main window not found".to_string())?;
 
+    // Unhide the macOS application itself if the OS hid it when switching apps.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.show();
+    }
+
     if window.is_minimized().unwrap_or(false) {
         window.unminimize().map_err(|e| e.to_string())?;
     }
+
+    // Re-assert overlay stacking — Chrome activation can leave the window buried.
+    let _ = window.set_always_on_top(true);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.set_visible_on_all_workspaces(true);
+    }
+
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
     let _ = window.set_content_protected(true);
+    OVERLAY_USER_HIDDEN.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -110,10 +139,8 @@ fn capture_desktop_for_ai(app: &AppHandle) -> Result<String, String> {
 
     let result = capture_primary_monitor_png();
 
-    if let Some(window) = window {
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.set_content_protected(true);
+    if window.is_some() {
+        let _ = restore_main_window(app);
     }
 
     result
@@ -155,7 +182,7 @@ pub fn run() {
                         return;
                     }
 
-                    if shortcut.matches(chord_for_handler, Code::KeyA) {
+                    if shortcut.matches(chord_for_handler | Modifiers::SHIFT, Code::KeyA) {
                         let _ = toggle_window_visibility(app);
                         return;
                     }
@@ -185,13 +212,29 @@ pub fn run() {
             capture_screen_png
         ])
         .setup(move |app| {
+            // Overlay-style app: no Dock bounce fighting Chrome; matches skipTaskbar.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = app
+                    .handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_content_protected(true);
                 let _ = window.set_resizable(true);
+                let _ = window.set_always_on_top(true);
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = window.set_visible_on_all_workspaces(true);
+                }
             }
 
+            // Prefer ⌘/Ctrl+Shift+A for hide/show — plain ⌘+A is "Select All" on
+            // macOS and often fails to register as a global shortcut.
+            let hide_show = Shortcut::new(Some(chord | Modifiers::SHIFT), Code::KeyA);
             let shortcuts = [
-                Shortcut::new(Some(chord), Code::KeyA),
+                hide_show,
                 Shortcut::new(Some(chord), Code::KeyH),
                 Shortcut::new(Some(chord), Code::KeyG),
             ];
