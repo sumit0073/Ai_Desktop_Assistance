@@ -4,7 +4,11 @@ import { useAuth } from "../context/AuthContext";
 import { DEMO_CREDENTIALS } from "../lib/demoCredentials";
 import { validateEmail } from "../lib/validation";
 
-export function LoginPage() {
+type Props = {
+  notice?: string | null;
+};
+
+export function LoginPage({ notice = null }: Props) {
   const { signIn, configured } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -82,6 +86,11 @@ export function LoginPage() {
         Demo — email <code>{DEMO_CREDENTIALS.email}</code>, password{" "}
         <code>{DEMO_CREDENTIALS.password}</code>
       </p>
+      {notice && (
+        <p className="auth-notice" role="status">
+          {notice}
+        </p>
+      )}
       {error && (
         <p className="auth-error" role="alert">
           {error}

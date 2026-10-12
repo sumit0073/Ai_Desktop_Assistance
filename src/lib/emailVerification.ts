@@ -1,8 +1,9 @@
 import type { User } from "@supabase/supabase-js";
 
-/** Demo accounts and confirmed users may start sessions. */
-export function isEmailVerified(user: User | null, demoMode = false): boolean {
-  if (!user) return false;
-  if (demoMode || user.id === "demo-user") return true;
-  return Boolean(user.email_confirmed_at);
+/**
+ * Email confirmation is disabled for Seecog — any signed-in user may start sessions.
+ * Kept for compatibility with older imports/tests.
+ */
+export function isEmailVerified(user: User | null, _demoMode = false): boolean {
+  return Boolean(user);
 }

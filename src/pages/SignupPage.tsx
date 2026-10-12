@@ -19,7 +19,7 @@ import {
 } from "../lib/validation";
 
 type Props = {
-  onSwitchToLogin: () => void;
+  onSwitchToLogin: (notice?: string) => void;
 };
 
 export function SignupPage({ onSwitchToLogin }: Props) {
@@ -32,7 +32,6 @@ export function SignupPage({ onSwitchToLogin }: Props) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const onCountryChange = (next: PhoneCountrySelection) => {
@@ -52,7 +51,6 @@ export function SignupPage({ onSwitchToLogin }: Props) {
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
-    setNotice(null);
 
     const checks = [
       validateName(name),
@@ -79,14 +77,14 @@ export function SignupPage({ onSwitchToLogin }: Props) {
 
     if (result.error) {
       setError(result.error);
-    } else if (result.needsEmailConfirmation) {
-      setNotice(
-        "Account created. Check your email to verify — you can sign in now, but Start stays locked until you confirm.",
-      );
-      setPassword("");
-      setConfirmPassword("");
+      setSubmitting(false);
+      return;
     }
+
+    setPassword("");
+    setConfirmPassword("");
     setSubmitting(false);
+    onSwitchToLogin("Account created. Sign in with your email and password.");
   };
 
   return (
@@ -186,11 +184,6 @@ export function SignupPage({ onSwitchToLogin }: Props) {
           {error}
         </p>
       )}
-      {notice && (
-        <p className="auth-notice" role="status">
-          {notice}
-        </p>
-      )}
 
       <button type="submit" className="btn btn-primary" disabled={submitting}>
         {submitting ? "Creating account…" : "Create account"}
@@ -208,7 +201,11 @@ export function SignupPage({ onSwitchToLogin }: Props) {
 
       <p className="auth-switch">
         Already have an account?{" "}
-        <button type="button" className="link-btn" onClick={onSwitchToLogin}>
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() => onSwitchToLogin()}
+        >
           Sign in
         </button>
       </p>

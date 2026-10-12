@@ -62,7 +62,7 @@ export function mapAuthError(message: string | undefined): string {
     return "Incorrect email or password.";
   }
   if (lower.includes("email not confirmed")) {
-    return "Enable Confirm email + Allow unverified email sign-ins in Supabase Auth (Email provider), then try again.";
+    return "Email still needs confirmation in Supabase. Run the auto_confirm_email migration in the SQL Editor, or enable “Allow unverified email sign-ins” under Authentication → Providers → Email.";
   }
   if (lower.includes("user already registered")) {
     return "An account with this email already exists.";

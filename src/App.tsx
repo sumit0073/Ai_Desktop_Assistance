@@ -13,7 +13,7 @@ import {
 import "./App.css";
 
 function App() {
-  const { user, loading, enterDemo, configured, emailVerified } = useAuth();
+  const { user, loading, enterDemo, configured } = useAuth();
   const { active, startSession } = useWorkSession();
 
   useShortcutBridge();
@@ -53,7 +53,7 @@ function App() {
 
   // Logged in but idle: auto-start session when a capture/ask shortcut fires.
   useEffect(() => {
-    if (!user || active || !emailVerified) return;
+    if (!user || active) return;
 
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -76,7 +76,7 @@ function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [user, active, emailVerified, startSession]);
+  }, [user, active, startSession]);
 
   if (loading) {
     return (

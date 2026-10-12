@@ -1,6 +1,5 @@
 import {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useState,
@@ -9,7 +8,6 @@ import {
 import type { Session, User } from "@supabase/supabase-js";
 import { endAppSession } from "../lib/appSessions";
 import { DEMO_CREDENTIALS, isDemoLogin } from "../lib/demoCredentials";
-import { isEmailVerified } from "../lib/emailVerification";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { mapAuthError, normalizeEmail, normalizePhone } from "../lib/validation";
 
@@ -27,7 +25,6 @@ export type SignInInput = {
 
 export type AuthResult = {
   error: string | null;
-  needsEmailConfirmation?: boolean;
 };
 
 type AuthContextValue = {
@@ -36,11 +33,8 @@ type AuthContextValue = {
   loading: boolean;
   configured: boolean;
   demoMode: boolean;
-  emailVerified: boolean;
   signIn: (input: SignInInput) => Promise<AuthResult>;
   signUp: (input: SignUpInput) => Promise<AuthResult>;
-  resendVerificationEmail: () => Promise<AuthResult>;
-  refreshUser: () => Promise<boolean>;
   enterDemo: () => void;
   signOut: () => Promise<void>;
 };
@@ -135,59 +129,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { error: mapAuthError(error.message) };
     }
 
-    // Supabase returns a user with empty identities when email is already taken
-    // and "Confirm email" is enabled (anti-enumeration behavior varies by project).
+    // Supabase returns a user with empty identities when email is already taken.
     const identities = data.user?.identities ?? [];
     if (data.user && identities.length === 0) {
       return { error: mapAuthError("User already registered") };
     }
 
-    // Prefer an immediate session so users can land on Start and verify later.
-    if (!data.session) {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password,
-      });
-      if (signInError) {
-        return { error: mapAuthError(signInError.message) };
-      }
+    // Keep the user on Login after signup (do not auto-enter the app).
+    if (data.session) {
+      await supabase.auth.signOut();
     }
 
-    const needsEmailConfirmation = !isEmailVerified(data.user, false);
-    return { error: null, needsEmailConfirmation };
+    return { error: null };
   };
-
-  const resendVerificationEmail = useCallback(async (): Promise<AuthResult> => {
-    if (!supabase) {
-      return {
-        error: "Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.",
-      };
-    }
-
-    const email = user?.email;
-    if (!email) {
-      return { error: "No email on this account." };
-    }
-
-    const { error } = await supabase.auth.resend({
-      type: "signup",
-      email,
-    });
-
-    return { error: error ? mapAuthError(error.message) : null };
-  }, [user?.email]);
-
-  const refreshUser = useCallback(async (): Promise<boolean> => {
-    if (!supabase) return false;
-
-    const { data, error } = await supabase.auth.getUser();
-    if (error || !data.user) return false;
-
-    setUser(data.user);
-    const { data: sessionData } = await supabase.auth.getSession();
-    setSession(sessionData.session);
-    return isEmailVerified(data.user, demoMode);
-  }, [demoMode]);
 
   const enterDemo = () => {
     setDemoMode(true);
@@ -211,8 +165,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut();
   };
 
-  const emailVerified = isEmailVerified(user, demoMode);
-
   return (
     <AuthContext.Provider
       value={{
@@ -221,11 +173,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         configured: isSupabaseConfigured,
         demoMode,
-        emailVerified,
         signIn,
         signUp,
-        resendVerificationEmail,
-        refreshUser,
         enterDemo,
         signOut,
       }}

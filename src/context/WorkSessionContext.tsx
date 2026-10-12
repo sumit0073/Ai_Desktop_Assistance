@@ -18,24 +18,20 @@ type WorkSessionContextValue = {
 const WorkSessionContext = createContext<WorkSessionContextValue | null>(null);
 
 export function WorkSessionProvider({ children }: { children: ReactNode }) {
-  const { user, emailVerified } = useAuth();
+  const { user } = useAuth();
   const [active, setActive] = useState(false);
 
   useEffect(() => {
     if (!user) setActive(false);
   }, [user]);
 
-  useEffect(() => {
-    if (!emailVerified) setActive(false);
-  }, [emailVerified]);
-
   const startSession = useCallback(async () => {
-    if (!user || !emailVerified) return;
+    if (!user) return;
     if (user.id !== "demo-user") {
       await startAppSession(user.id);
     }
     setActive(true);
-  }, [user, emailVerified]);
+  }, [user]);
 
   const stopSession = useCallback(async () => {
     await endAppSession();

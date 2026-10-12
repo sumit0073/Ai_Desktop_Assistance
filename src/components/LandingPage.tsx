@@ -9,9 +9,11 @@ type AuthView = "login" | "signup";
 
 export function LandingPage() {
   const [view, setView] = useState<AuthView>("login");
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const switchView = (next: AuthView) => {
     if (next === view) return;
+    if (next === "signup") setAuthNotice(null);
     setView(next);
   };
 
@@ -43,9 +45,14 @@ export function LandingPage() {
           <AuthTabs active={view} onChange={switchView} />
           <div key={view} className="auth-panel__body">
             {view === "login" ? (
-              <LoginPage />
+              <LoginPage notice={authNotice} />
             ) : (
-              <SignupPage onSwitchToLogin={() => switchView("login")} />
+              <SignupPage
+                onSwitchToLogin={(notice) => {
+                  setAuthNotice(notice ?? null);
+                  switchView("login");
+                }}
+              />
             )}
           </div>
         </div>
