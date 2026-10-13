@@ -6,11 +6,14 @@ import {
   isFreshArchitectureTopic,
   looksLikeArchitecture,
 } from "./architectureDetect";
+import { shouldAllowDirectGroqChat } from "./chatProxyValidation";
+import { extractStreamDeltaText, type StreamDelta } from "./aiStreamParse";
 import {
   normalizeMermaidInMarkdown,
   replaceFirstMermaidBlock,
   validateMermaidStructure,
 } from "./mermaidSanitize";
+import { isSupabaseConfigured, supabase } from "./supabase";
 
 export type { ArchitectureDetail } from "./architectureDetect";
 export {
@@ -37,6 +40,10 @@ export type AnalysisInput = {
   forceArchitecture?: boolean;
   /** Override detail detection when expanding. */
   architectureDetail?: ArchitectureDetail;
+  /** Abort in-flight stream (tests / future UI cancel). */
+  signal?: AbortSignal;
+  /** Optional access token override (tests). */
+  accessToken?: string;
 };
 
 /** Keep enough thread context without blowing the request size. */
@@ -44,7 +51,15 @@ const MAX_HISTORY_MESSAGES = 12;
 /** At most one LLM syntax repair after local sanitize. */
 const MAX_MERMAID_REPAIR_ATTEMPTS = 1;
 
-/** Groq free-tier OpenAI-compatible API (console.groq.com). */
+/**
+ * SECURITY:
+ * - Production MUST use `VITE_CHAT_PROXY_URL` (Supabase Edge Function `chat-proxy`).
+ * - Direct Groq calls require `VITE_ALLOW_DIRECT_GROQ_CHAT=true` in DEV only.
+ * - Never ship `VITE_GROQ_API_KEY` in production builds.
+ * - See docs/ai-security.md
+ */
+
+/** Groq OpenAI-compatible API — DEV direct path only. */
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const DEFAULT_TEXT_MODEL = "openai/gpt-oss-20b";
 /** Free-tier chat model that accepts images. */
@@ -166,7 +181,14 @@ flowchart TB
 \`\`\``;
 }
 
-function getApiKey(): string | undefined {
+export function getChatProxyUrl(): string | undefined {
+  const url = (import.meta.env.VITE_CHAT_PROXY_URL as string | undefined)?.trim();
+  return url || undefined;
+}
+
+/** DEV-only client key — never read outside import.meta.env.DEV for DCE. */
+function getClientDevApiKey(): string | undefined {
+  if (!import.meta.env.DEV) return undefined;
   const key =
     (import.meta.env.VITE_GROQ_API_KEY as string | undefined) ||
     (import.meta.env.VITE_XAI_API_KEY as string | undefined);
@@ -196,9 +218,59 @@ function getVisionModel(): string {
   );
 }
 
-export const isGroqConfigured = Boolean(getApiKey());
-/** @deprecated Use isGroqConfigured */
-export const isGrokConfigured = isGroqConfigured;
+function chatRouting(): {
+  mode: "proxy" | "direct_dev" | "unavailable";
+  reason: string;
+} {
+  const proxyUrl = getChatProxyUrl();
+  if (proxyUrl) return { mode: "proxy", reason: "proxy_configured" };
+  const direct = shouldAllowDirectGroqChat({
+    prod: import.meta.env.PROD,
+    proxyUrl,
+    allowDirectDevFlag: import.meta.env.VITE_ALLOW_DIRECT_GROQ_CHAT as
+      | string
+      | undefined,
+  });
+  if (direct.allow && getClientDevApiKey()) {
+    return { mode: "direct_dev", reason: direct.reason };
+  }
+  return {
+    mode: "unavailable",
+    reason: import.meta.env.PROD
+      ? "production_requires_proxy"
+      : direct.reason,
+  };
+}
+
+/** True when chat can run (proxy URL, or explicit DEV direct Groq). */
+export function isAiConfigured(): boolean {
+  return chatRouting().mode !== "unavailable";
+}
+
+/** @deprecated Use isAiConfigured */
+export const isGroqConfigured = isAiConfigured;
+/** @deprecated Use isAiConfigured */
+export const isGrokConfigured = isAiConfigured;
+
+async function resolveAccessToken(override?: string): Promise<string> {
+  if (override?.trim()) return override.trim();
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error(
+      "Supabase Auth is required for chat AI. Sign in, or configure VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY.",
+    );
+  }
+  const { data, error } = await supabase.auth.getSession();
+  if (error) {
+    throw new Error("Could not read auth session for chat AI.");
+  }
+  const token = data.session?.access_token;
+  if (!token) {
+    throw new Error(
+      "Sign in to use chat AI. Demo mode has no auth token for the secure proxy.",
+    );
+  }
+  return token;
+}
 
 type ChatContent =
   | string
@@ -231,12 +303,25 @@ async function groqFetch(
   }
 }
 
-type StreamDelta = {
-  choices?: Array<{
-    delta?: { content?: string | null };
-    message?: { content?: string | null };
-  }>;
-};
+function appendSsePayload(
+  payload: string,
+  full: string,
+  onChunk?: (text: string) => void,
+): string {
+  if (!payload || payload === "[DONE]") return full;
+  try {
+    const json = JSON.parse(payload) as StreamDelta;
+    const piece = extractStreamDeltaText(json);
+    if (piece) {
+      const next = full + piece;
+      onChunk?.(next);
+      return next;
+    }
+  } catch {
+    // ignore malformed / partial frames
+  }
+  return full;
+}
 
 /** Parse OpenAI/Groq SSE chat.completion.chunk frames into text deltas. */
 async function readChatCompletionStream(
@@ -250,18 +335,7 @@ async function readChatCompletionStream(
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const json = JSON.parse(payload) as StreamDelta;
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) {
-          full += delta;
-          onChunk?.(full);
-        }
-      } catch {
-        // ignore malformed frames
-      }
+      full = appendSsePayload(trimmed.slice(5).trim(), full, onChunk);
     }
     if (!full.trim()) throw new Error("AI returned an empty response.");
     return full;
@@ -287,39 +361,13 @@ async function readChatCompletionStream(
       if (!trimmed || trimmed.startsWith(":")) continue;
       if (!trimmed.startsWith("data:")) continue;
 
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-
-      try {
-        const json = JSON.parse(payload) as StreamDelta;
-        const delta =
-          json.choices?.[0]?.delta?.content ??
-          json.choices?.[0]?.message?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          full += delta;
-          onChunk?.(full);
-        }
-      } catch {
-        // Partial JSON can appear if a frame was split oddly; keep going.
-      }
+      full = appendSsePayload(trimmed.slice(5).trim(), full, onChunk);
     }
   }
 
   const trailing = buffer.trim();
   if (trailing.startsWith("data:")) {
-    const payload = trailing.slice(5).trim();
-    if (payload && payload !== "[DONE]") {
-      try {
-        const json = JSON.parse(payload) as StreamDelta;
-        const delta = json.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          full += delta;
-          onChunk?.(full);
-        }
-      } catch {
-        // ignore
-      }
-    }
+    full = appendSsePayload(trailing.slice(5).trim(), full, onChunk);
   }
 
   if (!full.trim()) {
@@ -328,12 +376,73 @@ async function readChatCompletionStream(
   return full;
 }
 
-async function completeChat(
-  apiKey: string,
+type CompleteChatOptions = {
+  onChunk?: (text: string) => void;
+  signal?: AbortSignal;
+  accessToken?: string;
+};
+
+async function completeChatViaProxy(
   model: string,
   messages: ChatMessage[],
-  onChunk?: (text: string) => void,
+  options: CompleteChatOptions,
 ): Promise<string> {
+  const proxyUrl = getChatProxyUrl();
+  if (!proxyUrl) {
+    throw new Error("VITE_CHAT_PROXY_URL is not configured.");
+  }
+
+  const accessToken = await resolveAccessToken(options.accessToken);
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+
+  let response: Response;
+  try {
+    response = await groqFetch(proxyUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...(anonKey ? { apikey: anonKey } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.35,
+        stream: true,
+      }),
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/failed to fetch|networkerror|load failed/i.test(detail)) {
+      throw new Error(
+        "Could not reach the chat proxy (network). Check VITE_CHAT_PROXY_URL and try again.",
+      );
+    }
+    throw new Error(detail || "AI request failed.");
+  }
+
+  if (!response.ok) {
+    throw new Error(await safeErrorDetail(response));
+  }
+
+  return readChatCompletionStream(response, options.onChunk);
+}
+
+async function completeChatViaDirectGroqDev(
+  model: string,
+  messages: ChatMessage[],
+  options: CompleteChatOptions,
+): Promise<string> {
+  const apiKey = getClientDevApiKey();
+  if (!apiKey) {
+    throw new Error(
+      "Direct Groq chat requires VITE_GROQ_API_KEY plus VITE_ALLOW_DIRECT_GROQ_CHAT=true (local development only).",
+    );
+  }
+
   let response: Response;
   try {
     response = await groqFetch(`${GROQ_BASE_URL}/chat/completions`, {
@@ -349,8 +458,10 @@ async function completeChat(
         temperature: 0.35,
         stream: true,
       }),
+      signal: options.signal,
     });
   } catch (error) {
+    if (options.signal?.aborted) throw error;
     const detail = error instanceof Error ? error.message : String(error);
     if (/failed to fetch|networkerror|load failed/i.test(detail)) {
       throw new Error(
@@ -364,7 +475,29 @@ async function completeChat(
     throw new Error(await safeErrorDetail(response));
   }
 
-  return readChatCompletionStream(response, onChunk);
+  return readChatCompletionStream(response, options.onChunk);
+}
+
+async function completeChat(
+  model: string,
+  messages: ChatMessage[],
+  options: CompleteChatOptions = {},
+): Promise<string> {
+  const route = chatRouting();
+  if (route.mode === "proxy") {
+    return completeChatViaProxy(model, messages, options);
+  }
+  if (route.mode === "direct_dev") {
+    return completeChatViaDirectGroqDev(model, messages, options);
+  }
+  if (import.meta.env.PROD) {
+    throw new Error(
+      "Chat AI requires VITE_CHAT_PROXY_URL in production. See docs/ai-security.md.",
+    );
+  }
+  throw new Error(
+    "Chat AI is not configured. Set VITE_CHAT_PROXY_URL, or for local development only set VITE_ALLOW_DIRECT_GROQ_CHAT=true and VITE_GROQ_API_KEY. See docs/ai-security.md.",
+  );
 }
 
 function toUserContent(text: string, imageBase64?: string | null): ChatContent {
@@ -418,15 +551,13 @@ function historyAsTextOnly(messages: ChatMessage[]): ChatMessage[] {
 }
 
 async function repairMissingArchitecture(
-  apiKey: string,
   detail: ArchitectureDetail,
   priorMessages: ChatMessage[],
   previous: string,
-  onChunk?: (text: string) => void,
+  chatOpts: CompleteChatOptions,
 ): Promise<string> {
   const system = buildArchitectureSystemPrompt(detail);
   return completeChat(
-    apiKey,
     getTextModel(),
     [
       { role: "system", content: system },
@@ -442,44 +573,53 @@ async function repairMissingArchitecture(
           previous,
       },
     ],
-    onChunk,
+    chatOpts,
   );
 }
 
 async function repairInvalidMermaidSyntax(
-  apiKey: string,
   detail: ArchitectureDetail,
   markdown: string,
   invalidChart: string,
   reason: string,
+  chatOpts: CompleteChatOptions,
 ): Promise<string> {
-  const fixed = await completeChat(apiKey, getTextModel(), [
-    {
-      role: "system",
-      content:
-        `You fix Mermaid flowchart syntax only. Preserve architecture meaning and ${detail} detail level. ` +
-        `Return ONLY a \`\`\`mermaid flowchart TB\`\`\` fence — no prose. ` +
-        `Vertical stack only: layers top→bottom, direction LR inside subgraphs, downward edges, short labels. ` +
-        `Unique CamelCase subgraph ids with quoted titles; one edge per line; no comments/click/HTML.`,
-    },
-    {
-      role: "user",
-      content:
-        `Validation error: ${reason}\n\nBroken chart:\n\`\`\`mermaid\n${invalidChart}\n\`\`\`\n\nReturn a corrected Mermaid block only.`,
-    },
-  ]);
+  const fixed = await completeChat(
+    getTextModel(),
+    [
+      {
+        role: "system",
+        content:
+          `You fix Mermaid flowchart syntax only. Preserve architecture meaning and ${detail} detail level. ` +
+          `Return ONLY a \`\`\`mermaid flowchart TB\`\`\` fence — no prose. ` +
+          `Vertical stack only: layers top→bottom, direction LR inside subgraphs, downward edges, short labels. ` +
+          `Unique CamelCase subgraph ids with quoted titles; one edge per line; no comments/click/HTML.`,
+      },
+      {
+        role: "user",
+        content:
+          `Validation error: ${reason}\n\nBroken chart:\n\`\`\`mermaid\n${invalidChart}\n\`\`\`\n\nReturn a corrected Mermaid block only.`,
+      },
+    ],
+    { signal: chatOpts.signal, accessToken: chatOpts.accessToken },
+  );
   const repairedBody = extractMermaidBlock(fixed) ?? fixed;
   const validation = validateMermaidStructure(repairedBody);
   if (!validation.ok) return markdown;
   return replaceFirstMermaidBlock(markdown, validation.chart);
 }
 
-/** Call Groq (OpenAI OSS / free models) for chat + optional screenshot analysis. */
+/** Chat + optional screenshot analysis via authenticated chat-proxy (or DEV direct). */
 export async function analyzeWithAi(input: AnalysisInput): Promise<string> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  const route = chatRouting();
+  if (route.mode === "unavailable") {
+    if (import.meta.env.PROD) {
+      throw new Error(
+        "Chat AI requires VITE_CHAT_PROXY_URL in production. See docs/ai-security.md.",
+      );
+    }
     throw new Error(
-      "Add VITE_GROQ_API_KEY to your .env file (from console.groq.com/keys), then restart the app.",
+      "Chat AI is not configured. Set VITE_CHAT_PROXY_URL, or for local development only set VITE_ALLOW_DIRECT_GROQ_CHAT=true and VITE_GROQ_API_KEY. See docs/ai-security.md.",
     );
   }
 
@@ -487,6 +627,11 @@ export async function analyzeWithAi(input: AnalysisInput): Promise<string> {
   const imageBase64 = input.imageBase64?.trim() || null;
   const hasScreenshot = Boolean(imageBase64 || input.hasScreenshot);
   const history = trimHistory(input.history);
+  const chatOpts: CompleteChatOptions = {
+    onChunk: input.onChunk,
+    signal: input.signal,
+    accessToken: input.accessToken,
+  };
 
   if (!prompt && !hasScreenshot) {
     return "Share a question, or press Ctrl/⌘+H to capture the screen for analysis.";
@@ -541,17 +686,14 @@ When prior messages exist and this is a follow-up, expand or refine that archite
 When marked as a new architecture topic, do not reuse the previous system's components.`
     : SYSTEM_PROMPT;
 
-  const onChunk = input.onChunk;
-
   let text = await completeChat(
-    apiKey,
     model,
     [
       { role: "system", content: system },
       ...effectivePrior,
       { role: "user", content: toUserContent(userText, imageBase64) },
     ],
-    onChunk,
+    chatOpts,
   );
 
   const shouldHaveMermaid =
@@ -563,11 +705,10 @@ When marked as a new architecture topic, do not reuse the previous system's comp
 
   if (shouldHaveMermaid && !hasMermaidBlock(text)) {
     text = await repairMissingArchitecture(
-      apiKey,
       detail,
       effectivePrior,
       text,
-      onChunk,
+      chatOpts,
     );
   }
 
@@ -581,11 +722,11 @@ When marked as a new architecture topic, do not reuse the previous system's comp
       while (!validation.ok && attempts < MAX_MERMAID_REPAIR_ATTEMPTS) {
         attempts += 1;
         normalized = await repairInvalidMermaidSyntax(
-          apiKey,
           detail,
           normalized,
           validation.chart || block,
           validation.reason,
+          chatOpts,
         );
         const next = extractMermaidBlock(normalized);
         if (!next) break;
@@ -594,7 +735,7 @@ When marked as a new architecture topic, do not reuse the previous system's comp
     }
   }
 
-  if (normalized !== text) onChunk?.(normalized);
+  if (normalized !== text) chatOpts.onChunk?.(normalized);
   return normalized;
 }
 
@@ -651,14 +792,14 @@ async function safeErrorDetail(response: Response): Promise<string> {
   }
 
   if (response.status === 401 || response.status === 403) {
-    return "Groq API key rejected. Check VITE_GROQ_API_KEY in .env (console.groq.com/keys).";
+    return "Unauthorized for chat AI. Sign in again, or check the chat proxy configuration.";
   }
   if (response.status === 429) {
-    return "Groq rate limit hit. Wait a moment and try again.";
+    return "Chat rate limit hit. Wait a moment and try again.";
   }
   if (response.status === 413 || response.status === 400) {
-    return "Screenshot may be too large for Groq. Try again — captures are now compressed.";
+    return "Screenshot or prompt may be too large. Try again — captures are compressed.";
   }
 
-  return `Groq request failed (${response.status}).`;
+  return `Chat request failed (${response.status}).`;
 }

@@ -55,20 +55,57 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-          VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
+          VITE_STT_PROXY_URL: ${{ secrets.VITE_STT_PROXY_URL }}
+          VITE_CHAT_PROXY_URL: ${{ secrets.VITE_CHAT_PROXY_URL }}
           VITE_GROQ_MODEL: ${{ vars.VITE_GROQ_MODEL }}
           VITE_GROQ_VISION_MODEL: ${{ vars.VITE_GROQ_VISION_MODEL }}
         run: |
+          # Never inject GROQ_API_KEY / VITE_GROQ_API_KEY into the client bundle.
+          if [ -z "${VITE_SUPABASE_URL:-}" ] || [ -z "${VITE_SUPABASE_ANON_KEY:-}" ]; then
+            echo "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY secrets." >&2
+            exit 1
+          fi
+          if [ -z "${VITE_STT_PROXY_URL:-}" ]; then
+            echo "Missing secret VITE_STT_PROXY_URL (Supabase functions URL for stt-proxy)." >&2
+            exit 1
+          fi
+          if [ -z "${VITE_CHAT_PROXY_URL:-}" ]; then
+            echo "Missing secret VITE_CHAT_PROXY_URL (Supabase functions URL for chat-proxy)." >&2
+            exit 1
+          fi
           {
-            echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-}"
-            echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-}"
-            echo "VITE_GROQ_API_KEY=${VITE_GROQ_API_KEY:-}"
+            echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL}"
+            echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}"
+            echo "VITE_STT_PROXY_URL=${VITE_STT_PROXY_URL}"
+            echo "VITE_CHAT_PROXY_URL=${VITE_CHAT_PROXY_URL}"
             echo "VITE_GROQ_MODEL=${VITE_GROQ_MODEL:-openai/gpt-oss-20b}"
             echo "VITE_GROQ_VISION_MODEL=${VITE_GROQ_VISION_MODEL:-qwen/qwen3.8-27b}"
           } > .env
+          if grep -Eiq 'GROQ_API_KEY|ALLOW_DIRECT_GROQ' .env; then
+            echo "Refusing to build: client .env must not contain Groq secrets or direct-allow flags." >&2
+            exit 1
+          fi
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Quality gates (lint, unit tests, types, build, secret scan)
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm test
+          npx tsc -b
+          npm run build
+          npm run check:bundle-secrets | tee security-check.log
+          echo "Security check log preserved at security-check.log"
+
+      - name: Upload security-check log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-check-macos-${{ matrix.arch }}
+          path: security-check.log
+          if-no-files-found: warn
 
       - name: Build macOS DMG
         env:

@@ -97,6 +97,13 @@ function buildComponents(streaming: boolean): Components {
 }
 
 export function MarkdownMessage({ content, streaming = false }: Props) {
+  // Stable across stream chunks — new `components` every render remounts the tree and flickers.
+  // Hooks must run unconditionally (before any early return).
+  const components = useMemo(
+    () => buildComponents(streaming),
+    [streaming],
+  );
+
   if (streaming && !content.trim()) {
     return (
       <div className="md md--streaming md--waiting">
@@ -107,11 +114,6 @@ export function MarkdownMessage({ content, streaming = false }: Props) {
   }
 
   const display = streaming ? maskMermaidWhileStreaming(content) : content;
-  // Stable across stream chunks — new `components` every render remounts the tree and flickers.
-  const components = useMemo(
-    () => buildComponents(streaming),
-    [streaming],
-  );
 
   return (
     <div className={streaming ? "md md--streaming" : "md"}>

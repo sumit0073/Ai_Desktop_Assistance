@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export function WindowControls() {
   const [maximized, setMaximized] = useState(false);
+
+  const toggleHideShow = async () => {
+    try {
+      await invoke("toggle_main_window");
+    } catch {
+      // Browser preview — ignore.
+    }
+  };
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -65,6 +74,23 @@ export function WindowControls() {
 
   return (
     <div className="window-controls" role="group" aria-label="Window controls">
+      <button
+        type="button"
+        className="window-controls__btn window-controls__btn--hide"
+        onClick={() => void toggleHideShow()}
+        aria-label="Hide overlay"
+        title="Hide overlay (Ctrl/⌘+Shift+A)"
+      >
+        <svg viewBox="0 0 12 12" aria-hidden="true">
+          <path
+            d="M2 6.5h8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
       <button
         type="button"
         className="window-controls__btn window-controls__btn--max"

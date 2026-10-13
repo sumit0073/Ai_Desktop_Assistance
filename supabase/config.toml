@@ -1,0 +1,9 @@
+# Minimal Supabase config for Edge Functions in this repo.
+# Project linking / remote deploy uses the Supabase CLI (`supabase link`).
+
+[functions.stt-proxy]
+# Platform verifies the user JWT before the handler runs.
+verify_jwt = true
+
+[functions.chat-proxy]
+verify_jwt = true

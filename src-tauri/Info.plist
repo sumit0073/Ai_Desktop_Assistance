@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>System Bunny captures your microphone during meeting recording so your speech can be transcribed. Audio is sent to speech-to-text only when speech is detected.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>System Bunny needs system audio permission to transcribe meeting participants from speaker output. Capture starts only when you press Record.</string>
+</dict>
+</plist>

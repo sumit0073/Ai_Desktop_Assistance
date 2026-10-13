@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
     "lint": "oxlint",
     "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "ci:quality": "npm run lint && npm test && tsc -b && npm run build && npm run check:bundle-secrets",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

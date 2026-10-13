@@ -1,34 +1,106 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import { useAuth } from "../context/AuthContext";
 import { useWorkSession } from "../context/WorkSessionContext";
 import { useChatWindowKeys } from "../hooks/useChatWindowKeys";
+import { useComposerVoiceInput } from "../hooks/useComposerVoiceInput";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts";
+import { useMeetingCapture } from "../hooks/useMeetingCapture";
 import { usePinnedChatScroll } from "../hooks/usePinnedChatScroll";
-import { CHAT_SCROLL_STEP_PX } from "../lib/chatKeyboard";
 import { analyzeWithAi, hasMermaidBlock, type ArchitectureDetail } from "../lib/ai";
+import { CHAT_SCROLL_STEP_PX } from "../lib/chatKeyboard";
+import { buildAskAboutConversationPrompt } from "../lib/askAboutConversation";
+import { decideAskAudienceQuestion } from "../lib/askQuestionFlow";
+import {
+  extractAudienceQuestions,
+  type ExtractedQuestion,
+} from "../lib/extractAudienceQuestions";
+import { isMicBleedFromAudience } from "../lib/sanitizeTranscript";
+import { SttRollingContext } from "../lib/sttRollingContext";
+import { transcribeAudioBlob } from "../lib/transcribeAudio";
+import {
+  reconcileSegmentOverlap,
+  type AudioLane,
+} from "../lib/transcriptOverlap";
+import { ComposerMicIcon } from "./ComposerMicIcon";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ProfileMenu } from "./ProfileMenu";
 import { ThemeToggle } from "./ThemeToggle";
 import { WindowControls } from "./WindowControls";
 
+type Speaker = "them" | "me" | "assistant";
+
 type ChatMessage = {
   id: string;
+  /** Mapped into the AI API: them/me → user, assistant → assistant. */
   role: "user" | "assistant";
+  speaker: Speaker;
+  /** Display transcript after safe overlap trim (never an LLM rewrite). */
   content: string;
+  /** Raw STT text before hallucination filters, when from speech. */
+  originalContent?: string;
+  /** Text before overlap reconciliation (audit). */
+  preDedupContent?: string;
+  audioSource?: AudioLane;
+  captureSessionId?: string;
+  startedAtMs?: number;
+  endedAtMs?: number;
   imageBase64?: string;
   streaming?: boolean;
+  /** Structured questions tied to this transcript. */
+  questions?: ExtractedQuestion[];
 };
+
+function speakerToLane(who: "them" | "me"): AudioLane {
+  return who === "them" ? "meeting" : "microphone";
+}
 
 const STARTER: ChatMessage = {
   id: "welcome",
   role: "assistant",
+  speaker: "assistant",
   content:
-    "Shortcuts work while other apps are focused (no need to click Seecog first): Ctrl/⌘+Shift+A hide/show · Ctrl/⌘+H capture · Ctrl/⌘+G ask AI · Shift+↑/↓ scroll · Ctrl/⌘+arrows move window. Close quits the app.",
+    "Tap Record to start native capture. Your microphone is transcribed on the right; meeting/system audio (WASAPI loopback on Windows) on the left. Only detected speech is sent to speech-to-text — silence and mute do not create bubbles. Audience questions become chips you can tap for an AI answer. Ctrl/⌘+Enter asks about the whole thread.",
 };
 
 function screenshotDataUrl(base64: string): string {
   const mime = base64.startsWith("/9j/") ? "image/jpeg" : "image/png";
   return `data:${mime};base64,${base64}`;
+}
+
+function speakerLabel(speaker: Speaker): string {
+  if (speaker === "them") return "Them";
+  if (speaker === "me") return "You";
+  return "Assistant";
+}
+
+function toHistoryEntry(m: ChatMessage) {
+  if (m.speaker === "assistant") {
+    return { role: "assistant" as const, content: m.content };
+  }
+  const who = m.speaker === "them" ? "Them" : "Me";
+  return {
+    role: "user" as const,
+    content: `${who}: ${m.content}`,
+    imageBase64: m.imageBase64,
+  };
+}
+
+function formatConversationForAi(messages: ChatMessage[]): string {
+  return messages
+    .filter((m) => m.id !== "welcome" && m.content.trim() && !m.streaming)
+    .map((m) => {
+      if (m.speaker === "assistant") return `Assistant: ${m.content}`;
+      if (m.speaker === "them") return `Them: ${m.content}`;
+      return `Me: ${m.content}`;
+    })
+    .join("\n\n");
 }
 
 const isMac =
@@ -42,18 +114,42 @@ export function ChatInterface() {
   const { stopSession } = useWorkSession();
   const [messages, setMessages] = useState<ChatMessage[]>([STARTER]);
   const [input, setInput] = useState("");
-  const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null);
+  const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(
+    null,
+  );
   const [sending, setSending] = useState(false);
+  const [micStatus, setMicStatus] = useState<string | null>(null);
+  /** Question ids already sent to the AI (hide from the open-question tray). */
+  const [answeredQuestionIds, setAnsweredQuestionIds] = useState<string[]>([]);
+  /** Inline edit buffer for a question chip. */
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(
+    null,
+  );
+  const [editingQuestionText, setEditingQuestionText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef(input);
   const pendingRef = useRef(pendingScreenshot);
   const sendingRef = useRef(sending);
+  const messagesRef = useRef(messages);
+  /** Recent audience (speaker) lines — used to drop mic echo/bleed. */
+  const recentAudienceRef = useRef<string[]>([]);
+  /** Per-source rolling STT context (never mixes mic ↔ meeting). */
+  const sttContextRef = useRef(new SttRollingContext());
+  const lastSegmentRef = useRef<{
+    microphone?: ChatMessage;
+    meeting?: ChatMessage;
+  }>({});
+  /** Live STT bubble per lane (partials update in place until final). */
+  const liveUtteranceRef = useRef<{
+    microphone?: { messageId: string; utteranceId: string };
+    meeting?: { messageId: string; utteranceId: string };
+  }>({});
+  /** Drop late partials after a final for the same utterance has landed. */
+  const finalizedUtterancesRef = useRef<Set<string>>(new Set());
   const contentKey = `${messages.length}:${messages[messages.length - 1]?.content.length ?? 0}:${pendingScreenshot ? 1 : 0}:${sending ? 1 : 0}`;
   const { showJumpToLatest, jumpToLatest } = usePinnedChatScroll(listRef, {
     contentKey,
-    // While the assistant streams, do not force the viewport down.
     freezeFollow: sending,
-    // Snap once when a new turn is appended so the question is visible.
     newTurnKey: messages.length,
   });
 
@@ -71,12 +167,131 @@ export function ChatInterface() {
     sendingRef.current = sending;
   }, [sending]);
 
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const resetView = () => {
     setMessages([STARTER]);
     setInput("");
     setPendingScreenshot(null);
     setSending(false);
+    setMicStatus(null);
+    setAnsweredQuestionIds([]);
+    setEditingQuestionId(null);
+    setEditingQuestionText("");
+    sttContextRef.current.clear();
+    lastSegmentRef.current = {};
+    recentAudienceRef.current = [];
   };
+
+  const openQuestions = messages
+    .filter((m) => m.speaker === "them" && m.questions?.length)
+    .flatMap((m) => m.questions ?? [])
+    .filter((q) => !answeredQuestionIds.includes(q.questionId));
+
+  const appendSpeakerMessage = useCallback(
+    (
+      text: string,
+      who: "them" | "me",
+      imageBase64?: string | null,
+      meta?: {
+        originalText?: string;
+        sessionId?: string;
+        startedAtMs?: number;
+        endedAtMs?: number;
+      },
+    ) => {
+      const preDedup = text.trim();
+      if (!preDedup && !imageBase64) return;
+
+      const lane = speakerToLane(who);
+      const sessionId =
+        meta?.sessionId || sttContextRef.current.getSessionId() || "manual";
+      let trimmed = preDedup;
+
+      if (trimmed) {
+        const prev = lastSegmentRef.current[lane];
+        const reconciled = reconcileSegmentOverlap(
+          prev
+            ? {
+                text: prev.content,
+                originalText: prev.originalContent,
+                source: lane,
+                sessionId: prev.captureSessionId || sessionId,
+                startedAtMs: prev.startedAtMs,
+                endedAtMs: prev.endedAtMs,
+              }
+            : null,
+          {
+            text: trimmed,
+            originalText: meta?.originalText,
+            source: lane,
+            sessionId,
+            startedAtMs: meta?.startedAtMs,
+            endedAtMs: meta?.endedAtMs,
+          },
+        );
+        trimmed = reconciled.text;
+        if (!trimmed && !imageBase64) return;
+      }
+
+      const msgId = crypto.randomUUID();
+      const recentContext = messagesRef.current
+        .filter((m) => m.id !== "welcome" && m.content.trim())
+        .slice(-6)
+        .map((m) => m.content);
+
+      const questions =
+        who === "them" && trimmed
+          ? extractAudienceQuestions(trimmed, {
+              sourceTranscriptId: msgId,
+              recentContext,
+            })
+          : undefined;
+
+      const msg: ChatMessage = {
+        id: msgId,
+        role: "user",
+        speaker: who,
+        content: trimmed || (imageBase64 ? "Screen capture attached." : ""),
+        originalContent: meta?.originalText?.trim() || undefined,
+        preDedupContent: preDedup || undefined,
+        audioSource: lane,
+        captureSessionId: sessionId,
+        startedAtMs: meta?.startedAtMs,
+        endedAtMs: meta?.endedAtMs,
+        imageBase64: imageBase64 ?? undefined,
+        questions: questions?.length ? questions : undefined,
+      };
+      setMessages((prev) => [...prev, msg]);
+      setInput("");
+      setPendingScreenshot(null);
+      lastSegmentRef.current[lane] = msg;
+
+      if (trimmed && meta?.sessionId) {
+        const uncertain = Boolean(questions?.some((q) => q.needsReview));
+        sttContextRef.current.push(lane, trimmed, {
+          trusted: true,
+          // Keep uncertain meeting text out of rolling context so a bad
+          // recognition cannot reinforce itself on the next segment.
+          uncertain: who === "them" ? uncertain : false,
+        });
+      }
+
+      if (who === "them" && questions?.length) {
+        const review = questions.filter((q) => q.needsReview).length;
+        setMicStatus(
+          `${questions.length} question${questions.length === 1 ? "" : "s"} found` +
+            (review ? ` (${review} may need a quick check)` : "") +
+            " — tap to answer or edit.",
+        );
+      } else {
+        setMicStatus(null);
+      }
+    },
+    [],
+  );
 
   const runAnalysis = async (
     prompt: string,
@@ -84,6 +299,8 @@ export function ChatInterface() {
     options?: {
       forceArchitecture?: boolean;
       architectureDetail?: ArchitectureDetail;
+      /** When set, do not also append a duplicate user bubble for the prompt. */
+      skipUserBubble?: boolean;
     },
   ) => {
     if (sendingRef.current) return;
@@ -91,42 +308,40 @@ export function ChatInterface() {
     const trimmed = prompt.trim();
     const hasScreenshot = Boolean(imageBase64);
 
-    // Cmd/Ctrl+G with an empty chat clears / resets the view.
     if (!trimmed && !hasScreenshot && !options?.forceArchitecture) {
       resetView();
       return;
     }
 
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: trimmed || "Analyze this screen capture.",
-      imageBase64: imageBase64 ?? undefined,
-    };
-
-    // Capture prior turns before appending the new user message (state is still previous).
-    const history = messages
+    const history = messagesRef.current
       .filter((m) => m.id !== "welcome")
-      .map((m) => ({
-        role: m.role,
-        content: m.content,
-        imageBase64: m.imageBase64,
-      }));
+      .map(toHistoryEntry);
 
     const assistantId = crypto.randomUUID();
-    setMessages((prev) => [
-      ...prev,
-      userMessage,
-      {
+    setMessages((prev) => {
+      const next = [...prev];
+      if (!options?.skipUserBubble && (trimmed || hasScreenshot)) {
+        next.push({
+          id: crypto.randomUUID(),
+          role: "user",
+          speaker: "me",
+          content: trimmed || "Analyze this screen capture.",
+          imageBase64: imageBase64 ?? undefined,
+        });
+      }
+      next.push({
         id: assistantId,
         role: "assistant",
+        speaker: "assistant",
         content: "",
         streaming: true,
-      },
-    ]);
+      });
+      return next;
+    });
     setInput("");
     setPendingScreenshot(null);
     setSending(true);
+    setMicStatus(null);
 
     let raf = 0;
     let latestChunk = "";
@@ -186,6 +401,104 @@ export function ChatInterface() {
     }
   };
 
+  const askAudienceQuestion = (
+    question: ExtractedQuestion,
+    editedText?: string,
+  ) => {
+    const decision = decideAskAudienceQuestion({
+      question,
+      editedText,
+      alreadyAnsweredIds: answeredQuestionIds,
+      submitting: sendingRef.current,
+      messages: messagesRef.current,
+    });
+
+    if (decision.action === "require_review") {
+      setEditingQuestionId(question.questionId);
+      setEditingQuestionText(question.displayQuestion);
+      setMicStatus("This question may be uncertain — edit it, then send.");
+      return;
+    }
+    if (decision.action === "reject_duplicate" || decision.action === "reject_empty") {
+      return;
+    }
+
+    setAnsweredQuestionIds((prev) =>
+      prev.includes(decision.questionId)
+        ? prev
+        : [...prev, decision.questionId],
+    );
+    setEditingQuestionId(null);
+    setEditingQuestionText("");
+
+    const askBubble: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      speaker: "me",
+      content: decision.questionText,
+    };
+    setMessages((prev) => {
+      const next = [...prev, askBubble];
+      messagesRef.current = next;
+      return next;
+    });
+
+    void runAnalysis(decision.prompt, null, { skipUserBubble: true });
+  };
+
+  const updateQuestionDisplay = (
+    messageId: string,
+    questionId: string,
+    displayQuestion: string,
+  ) => {
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== messageId || !m.questions) return m;
+        return {
+          ...m,
+          questions: m.questions.map((q) =>
+            q.questionId === questionId
+              ? {
+                  ...q,
+                  displayQuestion,
+                  needsReview: false,
+                }
+              : q,
+          ),
+        };
+      }),
+    );
+  };
+
+  const askAboutConversation = (extraPrompt?: string) => {
+    if (sendingRef.current) return;
+    const transcript = formatConversationForAi(messagesRef.current);
+    const note = extraPrompt?.trim();
+    if (!transcript && !note && !pendingRef.current) {
+      resetView();
+      return;
+    }
+    const prompt = buildAskAboutConversationPrompt({ note, transcript });
+    // Show the typed question as the bubble; keep the full prompt (with
+    // transcript context) for the model only.
+    if (note) {
+      const askBubble: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        speaker: "me",
+        content: note,
+      };
+      setMessages((prev) => {
+        const next = [...prev, askBubble];
+        messagesRef.current = next;
+        return next;
+      });
+      void runAnalysis(prompt, pendingRef.current, { skipUserBubble: true });
+      return;
+    }
+    void runAnalysis(prompt, pendingRef.current);
+  };
+
   const expandArchitecture = (mode: "full" | "subsystem") => {
     if (sendingRef.current) return;
     const prompt =
@@ -198,9 +511,227 @@ export function ChatInterface() {
     });
   };
 
+  /** Microphone → You (right). Meeting loopback → Audience (left) + question chips. */
+  const onAudioTranscript = useCallback(
+    async (
+      text: string,
+      source: "microphone" | "meeting",
+      meta: {
+        originalText: string;
+        sessionId: string;
+        startedAtMs: number;
+        endedAtMs: number;
+        utteranceId: string;
+        isPartial: boolean;
+      },
+    ) => {
+      const who: "them" | "me" = source === "meeting" ? "them" : "me";
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      if (
+        meta.isPartial &&
+        finalizedUtterancesRef.current.has(meta.utteranceId)
+      ) {
+        return;
+      }
+
+      // Mic bleed check only on finals (partials are still refining).
+      if (
+        !meta.isPartial &&
+        who === "me" &&
+        isMicBleedFromAudience(trimmed, recentAudienceRef.current)
+      ) {
+        const live = liveUtteranceRef.current[source];
+        if (live?.utteranceId === meta.utteranceId) {
+          setMessages((prev) => prev.filter((m) => m.id !== live.messageId));
+          liveUtteranceRef.current[source] = undefined;
+        }
+        return;
+      }
+
+      const live = liveUtteranceRef.current[source];
+      if (live && live.utteranceId === meta.utteranceId) {
+        setMessages((prev) => {
+          const next = prev.map((m) => {
+            if (m.id !== live.messageId) return m;
+            const questions =
+              !meta.isPartial && who === "them"
+                ? extractAudienceQuestions(trimmed, {
+                    sourceTranscriptId: m.id,
+                    recentContext: prev
+                      .filter((x) => x.id !== "welcome" && x.content.trim())
+                      .slice(-6)
+                      .map((x) => x.content),
+                  })
+                : m.questions;
+            return {
+              ...m,
+              content: trimmed,
+              originalContent: meta.originalText?.trim() || m.originalContent,
+              endedAtMs: meta.endedAtMs,
+              streaming: meta.isPartial,
+              questions:
+                !meta.isPartial && questions?.length ? questions : undefined,
+            };
+          });
+          messagesRef.current = next;
+          return next;
+        });
+
+        if (!meta.isPartial) {
+          finalizedUtterancesRef.current.add(meta.utteranceId);
+          if (finalizedUtterancesRef.current.size > 80) {
+            finalizedUtterancesRef.current.clear();
+          }
+          if (who === "them") {
+            recentAudienceRef.current = [
+              trimmed,
+              ...recentAudienceRef.current,
+            ].slice(0, 8);
+          }
+          const finalized: ChatMessage = {
+            id: live.messageId,
+            role: "user",
+            speaker: who,
+            content: trimmed,
+            originalContent: meta.originalText?.trim() || undefined,
+            audioSource: source,
+            captureSessionId: meta.sessionId,
+            startedAtMs: meta.startedAtMs,
+            endedAtMs: meta.endedAtMs,
+          };
+          lastSegmentRef.current[source] = finalized;
+          sttContextRef.current.push(source, trimmed, {
+            trusted: true,
+            uncertain: false,
+          });
+          liveUtteranceRef.current[source] = undefined;
+
+          if (who === "them") {
+            const msg = messagesRef.current.find((m) => m.id === live.messageId);
+            const qCount = msg?.questions?.length ?? 0;
+            if (qCount) {
+              const review =
+                msg?.questions?.filter((q) => q.needsReview).length ?? 0;
+              setMicStatus(
+                `${qCount} question${qCount === 1 ? "" : "s"} found` +
+                  (review ? ` (${review} may need a quick check)` : "") +
+                  " — tap to answer or edit.",
+              );
+            } else {
+              setMicStatus(null);
+            }
+          }
+        }
+        return;
+      }
+
+      // New utterance — create a streaming bubble for partials, or a normal one for finals.
+      if (meta.isPartial) {
+        const msgId = crypto.randomUUID();
+        liveUtteranceRef.current[source] = {
+          messageId: msgId,
+          utteranceId: meta.utteranceId,
+        };
+        const msg: ChatMessage = {
+          id: msgId,
+          role: "user",
+          speaker: who,
+          content: trimmed,
+          originalContent: meta.originalText?.trim() || undefined,
+          audioSource: source,
+          captureSessionId: meta.sessionId,
+          startedAtMs: meta.startedAtMs,
+          endedAtMs: meta.endedAtMs,
+          streaming: true,
+        };
+        setMessages((prev) => {
+          const next = [...prev, msg];
+          messagesRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      finalizedUtterancesRef.current.add(meta.utteranceId);
+      if (finalizedUtterancesRef.current.size > 80) {
+        finalizedUtterancesRef.current.clear();
+      }
+
+      if (source === "meeting") {
+        recentAudienceRef.current = [
+          trimmed,
+          ...recentAudienceRef.current,
+        ].slice(0, 8);
+        appendSpeakerMessage(trimmed, "them", null, {
+          originalText: meta.originalText,
+          sessionId: meta.sessionId,
+          startedAtMs: meta.startedAtMs,
+          endedAtMs: meta.endedAtMs,
+        });
+        return;
+      }
+      appendSpeakerMessage(trimmed, "me", null, {
+        originalText: meta.originalText,
+        sessionId: meta.sessionId,
+        startedAtMs: meta.startedAtMs,
+        endedAtMs: meta.endedAtMs,
+      });
+    },
+    [appendSpeakerMessage],
+  );
+
+  const {
+    listening,
+    busy: micBusy,
+    toggle: toggleMic,
+    sources: audioSources,
+    micMuted,
+  } = useMeetingCapture({
+    transcribe: transcribeAudioBlob,
+    getRecentTranscript: (source) =>
+      sttContextRef.current.getPromptContext(source),
+    onSessionStart: (sessionId) => {
+      sttContextRef.current.reset(sessionId);
+      lastSegmentRef.current = {};
+      liveUtteranceRef.current = {};
+      finalizedUtterancesRef.current.clear();
+    },
+    onSessionEnd: () => {
+      sttContextRef.current.clear();
+      lastSegmentRef.current = {};
+      liveUtteranceRef.current = {};
+      finalizedUtterancesRef.current.clear();
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.streaming ? { ...m, streaming: false } : m,
+        );
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    onTranscript: onAudioTranscript,
+    onError: (message) => setMicStatus(message),
+    onStatus: (message) => setMicStatus(message),
+  });
+
+  const {
+    listening: voiceListening,
+    busy: voiceBusy,
+    toggle: toggleComposerVoice,
+  } = useComposerVoiceInput({
+    getBaselineText: () => inputRef.current,
+    onDraftChange: (text) => {
+      setInput(text);
+      setMicStatus(null);
+    },
+    onError: (message) => setMicStatus(message),
+    onStatus: (message) => setMicStatus(message),
+  });
+
   useGlobalShortcuts({
     onScreenshotAnalyze: (imageBase64) => {
-      // Cmd/Ctrl+H: capture any screen and send it to the AI immediately.
       void runAnalysis("", imageBase64);
     },
     onScreenshotError: () => {
@@ -209,13 +740,15 @@ export function ChatInterface() {
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "Could not capture the screen. Check display permissions and try again.",
+          speaker: "assistant",
+          content:
+            "Could not capture the screen. Check display permissions and try again.",
         },
       ]);
     },
     onAnalyzeChat: () => {
-      // Cmd/Ctrl+G: send the chat question (and any pending shot) to the AI.
-      void runAnalysis(inputRef.current, pendingRef.current);
+      // Ctrl/⌘+G — ask AI using the full conversation (+ composer text).
+      askAboutConversation(inputRef.current);
     },
     onScrollChatUp: () => {
       listRef.current?.scrollBy({
@@ -233,7 +766,20 @@ export function ChatInterface() {
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    await runAnalysis(input, pendingScreenshot);
+    // Enter / Send: optional typed note on your side (right).
+    if (!input.trim() && !pendingScreenshot) return;
+    appendSpeakerMessage(input, "me", pendingScreenshot);
+  };
+
+  const onComposerKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      // Ctrl/⌘+Enter: send the full conversation to the AI.
+      askAboutConversation(inputRef.current);
+      return;
+    }
+    // Plain Enter is handled by form submit → add bubble.
   };
 
   return (
@@ -269,25 +815,30 @@ export function ChatInterface() {
             <kbd>{modLabel}</kbd>+<kbd>H</kbd> capture
           </span>
           <span>
+            <kbd>{modLabel}</kbd>+<kbd>Enter</kbd> ask AI
+          </span>
+          <span>
             <kbd>{modLabel}</kbd>+<kbd>G</kbd> ask AI
           </span>
           <span>
-            <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> scroll
+            <kbd>Enter</kbd> add note
           </span>
-          <span>
-            <kbd>{modLabel}</kbd>+<kbd>↑↓←→</kbd> move
-          </span>
+          <span>Record = mic (You) + meeting audio (Audience)</span>
         </div>
 
         <div className="chat-messages-shell">
-          <div className="chat-messages" ref={listRef}>
+          <div className="chat-messages chat-messages--thread" ref={listRef}>
             {messages.map((message) => (
               <article
                 key={message.id}
-                className={`bubble bubble--${message.role}`}
+                className={`bubble bubble--${message.speaker}`}
               >
                 <span className="bubble__role">
-                  {message.role === "assistant" ? "Assistant" : "You"}
+                  {message.speaker === "them"
+                    ? "Audience (speaker)"
+                    : message.speaker === "me"
+                      ? "You (mic)"
+                      : speakerLabel(message.speaker)}
                 </span>
                 {message.imageBase64 && (
                   <img
@@ -296,7 +847,7 @@ export function ChatInterface() {
                     alt="Captured screen"
                   />
                 )}
-                {message.role === "assistant" ? (
+                {message.speaker === "assistant" ? (
                   <>
                     <MarkdownMessage
                       content={message.content}
@@ -325,19 +876,136 @@ export function ChatInterface() {
                       )}
                   </>
                 ) : (
-                  <p>{message.content}</p>
+                  <p>
+                    {message.content}
+                    {message.streaming ? (
+                      <span className="stream-cursor" aria-hidden="true" />
+                    ) : null}
+                    {!message.streaming &&
+                      message.originalContent &&
+                      message.originalContent !== message.content && (
+                        <span className="bubble__original-hint" title={message.originalContent}>
+                          {" "}
+                          · STT preserved
+                        </span>
+                      )}
+                  </p>
                 )}
+                {message.speaker === "them" &&
+                  message.questions &&
+                  message.questions.length > 0 && (
+                    <div
+                      className="audience-questions"
+                      role="group"
+                      aria-label="Audience questions"
+                    >
+                      <span className="audience-questions__label">
+                        Questions from this clip — tap to answer
+                      </span>
+                      <div className="audience-questions__list">
+                        {message.questions.map((q) => {
+                          const answered = answeredQuestionIds.includes(
+                            q.questionId,
+                          );
+                          const editing = editingQuestionId === q.questionId;
+                          if (editing) {
+                            return (
+                              <div
+                                key={q.questionId}
+                                className="audience-questions__edit"
+                              >
+                                <input
+                                  value={editingQuestionText}
+                                  onChange={(e) =>
+                                    setEditingQuestionText(e.target.value)
+                                  }
+                                  aria-label="Edit question before sending"
+                                />
+                                <button
+                                  type="button"
+                                  className="audience-questions__btn"
+                                  disabled={sending || !editingQuestionText.trim()}
+                                  onClick={() => {
+                                    updateQuestionDisplay(
+                                      message.id,
+                                      q.questionId,
+                                      editingQuestionText.trim(),
+                                    );
+                                    askAudienceQuestion(
+                                      {
+                                        ...q,
+                                        displayQuestion:
+                                          editingQuestionText.trim(),
+                                        needsReview: false,
+                                      },
+                                      editingQuestionText.trim(),
+                                    );
+                                  }}
+                                >
+                                  Send
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost"
+                                  onClick={() => {
+                                    setEditingQuestionId(null);
+                                    setEditingQuestionText("");
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <span
+                              key={q.questionId}
+                              className="audience-questions__chip-wrap"
+                            >
+                              <button
+                                type="button"
+                                className={`audience-questions__btn${q.needsReview ? " audience-questions__btn--review" : ""}`}
+                                disabled={sending || answered}
+                                onClick={() => askAudienceQuestion(q)}
+                                title={
+                                  q.needsReview
+                                    ? `May need review. Original: ${q.originalQuestion}`
+                                    : `Send to AI. Original: ${q.originalQuestion}`
+                                }
+                              >
+                                {q.needsReview ? "Review · " : ""}
+                                {q.displayQuestion}
+                              </button>
+                              <button
+                                type="button"
+                                className="audience-questions__edit-btn"
+                                disabled={sending || answered}
+                                onClick={() => {
+                                  setEditingQuestionId(q.questionId);
+                                  setEditingQuestionText(q.displayQuestion);
+                                }}
+                                title="Edit question before sending"
+                                aria-label="Edit question"
+                              >
+                                Edit
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
               </article>
             ))}
             {pendingScreenshot && (
-              <article className="bubble bubble--user">
+              <article className="bubble bubble--me">
                 <span className="bubble__role">Pending capture</span>
                 <img
                   className="bubble__shot"
                   src={screenshotDataUrl(pendingScreenshot)}
                   alt="Pending screenshot"
                 />
-                <p>Ready for {modLabel}+G analysis</p>
+                <p>Ready for {modLabel}+Enter analysis</p>
               </article>
             )}
           </div>
@@ -352,19 +1020,148 @@ export function ChatInterface() {
           )}
         </div>
 
-        <form className="chat-composer" onSubmit={onSubmit}>
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={`Ask System Bunny… (${modLabel}+G)`}
-            aria-label="Message"
-          />
+        {openQuestions.length > 0 && (
+          <div
+            className="open-questions"
+            role="region"
+            aria-label="Open audience questions"
+          >
+            <span className="open-questions__label">
+              Open questions — click one for an AI answer
+            </span>
+            <div className="open-questions__list">
+              {openQuestions.map((q) => (
+                <button
+                  key={q.questionId}
+                  type="button"
+                  className={`audience-questions__btn${q.needsReview ? " audience-questions__btn--review" : ""}`}
+                  disabled={sending}
+                  onClick={() => askAudienceQuestion(q)}
+                  title={
+                    q.needsReview
+                      ? `May need review. Original: ${q.originalQuestion}`
+                      : q.originalQuestion
+                  }
+                >
+                  {q.needsReview ? "Review · " : ""}
+                  {q.displayQuestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(micStatus || listening || micBusy || voiceListening || voiceBusy) && (
+          <p className="mic-status" role="status">
+            {voiceListening
+              ? "Voice input listening… tap the mic icon to stop"
+              : voiceBusy
+                ? "Finishing speech-to-text…"
+                : listening
+                  ? [
+                      "Recording…",
+                      micMuted
+                        ? "mic quiet/muted"
+                        : audioSources.mic
+                          ? "mic → You (right)"
+                          : "mic unavailable",
+                      audioSources.meeting
+                        ? "meeting → Audience (left)"
+                        : "meeting audio unavailable",
+                      "STT only on detected speech",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : micBusy
+                    ? "Transcribing speech segment…"
+                    : micStatus}
+          </p>
+        )}
+
+        <form className="chat-composer chat-composer--voice" onSubmit={onSubmit}>
+          <button
+            type="button"
+            className={`mic-button${listening ? " mic-button--live" : ""}`}
+            onClick={() => toggleMic()}
+            disabled={(sending && !listening) || voiceListening || voiceBusy}
+            title={
+              listening
+                ? "Stop meeting recording"
+                : "Record mic (You) + meeting/system audio (Audience)"
+            }
+            aria-label={
+              listening ? "Stop meeting recording" : "Start meeting recording"
+            }
+            aria-pressed={listening}
+          >
+            {listening ? "Stop" : "Record"}
+          </button>
+          <div
+            className={`composer-input-wrap${voiceListening ? " composer-input-wrap--live" : ""}`}
+          >
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onComposerKeyDown}
+              placeholder={
+                voiceListening
+                  ? "Listening… speak, then tap the mic to finish"
+                  : voiceBusy
+                    ? "Finishing speech-to-text…"
+                    : listening
+                      ? "Optional note (right)… Enter adds · tap question chips to answer"
+                      : `Type or tap the mic… Enter adds · ${modLabel}+Enter asks AI`
+              }
+              aria-label="Message"
+              disabled={voiceBusy}
+              readOnly={voiceListening}
+            />
+            <button
+              type="button"
+              className={`composer-input-mic${voiceListening ? " composer-input-mic--live" : ""}${voiceBusy ? " composer-input-mic--busy" : ""}`}
+              onClick={() => toggleComposerVoice()}
+              disabled={sending || listening || voiceBusy}
+              title={
+                voiceListening
+                  ? "Stop voice input"
+                  : "Voice input — speak into the mic"
+              }
+              aria-label={
+                voiceListening
+                  ? "Stop voice input"
+                  : voiceBusy
+                    ? "Finishing speech-to-text"
+                    : "Start voice input"
+              }
+              aria-pressed={voiceListening}
+            >
+              <ComposerMicIcon
+                listening={voiceListening}
+                busy={voiceBusy}
+              />
+            </button>
+          </div>
           <button
             type="submit"
-            className="btn btn-primary"
-            disabled={sending || (!input.trim() && !pendingScreenshot)}
+            className="btn btn-ghost"
+            disabled={
+              sending ||
+              voiceListening ||
+              voiceBusy ||
+              (!input.trim() && !pendingScreenshot)
+            }
+            title="Add typed note on your side"
           >
-            Send
+            Add
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={sending || voiceListening || voiceBusy}
+            title={`${modLabel}+Enter — ask AI about the conversation`}
+            onClick={() => askAboutConversation(input)}
+          >
+            Ask AI
           </button>
         </form>
       </aside>

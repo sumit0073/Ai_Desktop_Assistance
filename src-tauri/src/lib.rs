@@ -1,3 +1,5 @@
+mod audio;
+
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -7,6 +9,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use xcap::Monitor;
+
+use audio::{
+    ack_speech_segment, meeting_capture_status, start_meeting_capture, stop_meeting_capture,
+    MeetingCaptureState,
+};
 
 /// True only after the user intentionally hid the overlay (⌘/Ctrl+Shift+A).
 /// Prevents “restore” from being treated as “hide” when Chrome steals focus
@@ -48,15 +55,16 @@ fn toggle_window_visibility(app: &AppHandle) -> Result<(), String> {
 
     let user_hidden = OVERLAY_USER_HIDDEN.load(Ordering::SeqCst);
     let visible = window.is_visible().unwrap_or(false);
-    let focused = window.is_focused().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
 
-    // Only hide when the overlay is actually frontmost. If Chrome stole focus,
-    // restore instead of hiding again.
-    if !user_hidden && visible && focused {
+    // Toggle on visibility, not focus. Restore intentionally leaves keyboard
+    // focus with the other app (Chrome/meeting), so requiring focus made
+    // Ctrl+Shift+A able to show once and then never hide again.
+    if user_hidden || !visible || minimized {
+        restore_main_window(app)?;
+    } else {
         window.hide().map_err(|e| e.to_string())?;
         OVERLAY_USER_HIDDEN.store(true, Ordering::SeqCst);
-    } else {
-        restore_main_window(app)?;
     }
     Ok(())
 }
@@ -225,6 +233,7 @@ pub fn run() {
     let chord_for_handler = chord;
 
     tauri::Builder::default()
+        .manage(MeetingCaptureState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(
@@ -289,7 +298,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             enable_content_protection,
             toggle_main_window,
-            capture_screen_png
+            capture_screen_png,
+            start_meeting_capture,
+            stop_meeting_capture,
+            meeting_capture_status,
+            ack_speech_segment
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]

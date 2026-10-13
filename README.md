@@ -83,29 +83,39 @@ The window stays **resizable** and **movable** (drag the top bar).
 | `npm run tauri:build:mac` | macOS `.dmg` bundle (must run on a Mac) |
 | `npm run tauri:build:win` | Windows NSIS `.exe` + WiX `.msi` |
 
+Docker is **not** part of this project. Supabase work uses the hosted project + CLI
+(`link` / `db push` / `secrets` / `functions deploy`), not local containers.
+
 ## Download installers (GitHub Actions)
 
-Optional (so built apps have working auth/AI): add repository secrets  
-`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`  
-under **Settings → Secrets and variables → Actions**.
+This is a **desktop** app (Windows + macOS). Builds produce `.exe` / `.msi` / `.dmg`
+installers — not an Android APK.
 
-Installers appear on **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
-(or as workflow **Artifacts**).
+### One-click: both platforms
 
-### Windows (EXE / MSI)
+1. Add repository **Secrets** (Settings → Secrets and variables → Actions):
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_STT_PROXY_URL` (e.g. `https://<ref>.supabase.co/functions/v1/stt-proxy`)
+   - `VITE_CHAT_PROXY_URL` (e.g. `https://<ref>.supabase.co/functions/v1/chat-proxy`)
+2. Optional **Variables**: `VITE_GROQ_MODEL`, `VITE_GROQ_VISION_MODEL`
+3. Open [Actions → Build Desktop Installers](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-desktop.yml)
+4. **Run workflow** → wait for Windows + macOS jobs
+5. Download from:
+   - **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
+   - or the workflow run **Artifacts** (`SystemBunny-Windows-x64`, `SystemBunny-macOS-*`)
 
-1. Open [Actions → Build Windows Installer](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-windows.yml)
-2. Click **Run workflow** → **Run workflow**
-3. Download the **NSIS `.exe`** (recommended) or **`.msi`**
+Do **not** put `VITE_GROQ_API_KEY` in release builds — set `GROQ_API_KEY` as a  
+Supabase Edge Function secret. See [docs/proxy-deploy.md](docs/proxy-deploy.md) and  
+[docs/production-readiness.md](docs/production-readiness.md).
 
-Requires WebView2 (usually already on Windows 10/11).
+| Platform | File | Notes |
+| --- | --- | --- |
+| Windows | `.exe` (NSIS) | Recommended installer |
+| Windows | `.msi` | Enterprise / silent deploy |
+| macOS Apple Silicon | `.dmg` (`aarch64`) | M1–M4 |
+| macOS Intel | `.dmg` (`x64` / `x86_64`) | First open: right-click → **Open** |
 
-### Mac (DMG)
-
-A real `.dmg` must be built on a Mac runner.
-
-1. Open [Actions → Build macOS DMG](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-macos.yml)
-2. Click **Run workflow** → **Run workflow**
-3. Download the `.dmg` for Apple Silicon (`aarch64`) or Intel (`x64`)
-
-On first launch, macOS may block the unsigned build: right-click the app → **Open**.
+Single-platform workflows still exist if you only need one OS:  
+[Build Windows Installer](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-windows.yml) ·  
+[Build macOS DMG](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-macos.yml).
