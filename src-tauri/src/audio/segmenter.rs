@@ -13,7 +13,7 @@ const PRE_ROLL_MS: u32 = 280;
 /// Require this much trailing silence before ending a segment (ms).
 const END_SILENCE_MS: u32 = 420;
 /// Ignore noise bursts shorter than this (ms).
-const MIN_SPEECH_MS: u32 = 280;
+const MIN_SPEECH_MS: u32 = 360;
 /// While speech continues, emit growing-window partials this often (ms).
 const PARTIAL_EMIT_MS: u32 = 1_500;
 /// Cap a single segment so STT requests stay bounded (ms).
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn valid_short_speech_preserved() {
-        // ~400ms speech + end silence.
+        // ~400ms speech + end silence (above MIN_SPEECH_MS).
         let speech_frames = 20; // 400ms
         let silence_frames = 40; // 800ms
         let mut decisions = VecDeque::new();

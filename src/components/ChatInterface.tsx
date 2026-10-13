@@ -133,6 +133,9 @@ export function ChatInterface() {
   const messagesRef = useRef(messages);
   /** Recent audience (speaker) lines — used to drop mic echo/bleed. */
   const recentAudienceRef = useRef<string[]>([]);
+  /** Recent same-source UI texts for repeated weak-phrase STT rejection. */
+  const recentMicTextsRef = useRef<string[]>([]);
+  const recentMeetingTextsRef = useRef<string[]>([]);
   /** Per-source rolling STT context (never mixes mic ↔ meeting). */
   const sttContextRef = useRef(new SttRollingContext());
   const lastSegmentRef = useRef<{
@@ -146,6 +149,34 @@ export function ChatInterface() {
   }>({});
   /** Drop late partials after a final for the same utterance has landed. */
   const finalizedUtterancesRef = useRef<Set<string>>(new Set());
+
+  /** Audience texts for bleed checks: recent finals + live meeting draft. */
+  const audienceTextsForBleed = useCallback((): string[] => {
+    const liveMeetingId = liveUtteranceRef.current.meeting?.messageId;
+    const liveMeeting = liveMeetingId
+      ? messagesRef.current.find((m) => m.id === liveMeetingId)?.content
+      : undefined;
+    return [liveMeeting, ...recentAudienceRef.current].filter(
+      (t): t is string => Boolean(t?.trim()),
+    );
+  }, []);
+
+  const dropMicIfBleed = useCallback(
+    (text: string, utteranceId?: string): boolean => {
+      if (!isMicBleedFromAudience(text, audienceTextsForBleed())) return false;
+      const live = liveUtteranceRef.current.microphone;
+      if (live && (!utteranceId || live.utteranceId === utteranceId)) {
+        setMessages((prev) => {
+          const next = prev.filter((m) => m.id !== live.messageId);
+          messagesRef.current = next;
+          return next;
+        });
+        liveUtteranceRef.current.microphone = undefined;
+      }
+      return true;
+    },
+    [audienceTextsForBleed],
+  );
   const contentKey = `${messages.length}:${messages[messages.length - 1]?.content.length ?? 0}:${pendingScreenshot ? 1 : 0}:${sending ? 1 : 0}`;
   const { showJumpToLatest, jumpToLatest } = usePinnedChatScroll(listRef, {
     contentKey,
@@ -183,6 +214,8 @@ export function ChatInterface() {
     sttContextRef.current.clear();
     lastSegmentRef.current = {};
     recentAudienceRef.current = [];
+    recentMicTextsRef.current = [];
+    recentMeetingTextsRef.current = [];
   };
 
   const openQuestions = messages
@@ -536,18 +569,34 @@ export function ChatInterface() {
         return;
       }
 
-      // Mic bleed check only on finals (partials are still refining).
-      if (
-        !meta.isPartial &&
-        who === "me" &&
-        isMicBleedFromAudience(trimmed, recentAudienceRef.current)
-      ) {
-        const live = liveUtteranceRef.current[source];
-        if (live?.utteranceId === meta.utteranceId) {
-          setMessages((prev) => prev.filter((m) => m.id !== live.messageId));
-          liveUtteranceRef.current[source] = undefined;
-        }
+      // Mic lane: drop acoustic bleed from speakers (partials + finals).
+      if (who === "me" && dropMicIfBleed(trimmed, meta.utteranceId)) {
         return;
+      }
+
+      // Meeting lane: keep finals for bleed history; always scrub matching mic bubbles.
+      if (who === "them") {
+        if (!meta.isPartial) {
+          recentAudienceRef.current = [
+            trimmed,
+            ...recentAudienceRef.current,
+          ].slice(0, 12);
+        }
+        const micLive = liveUtteranceRef.current.microphone;
+        if (micLive) {
+          const micMsg = messagesRef.current.find(
+            (m) => m.id === micLive.messageId,
+          );
+          if (
+            micMsg?.content &&
+            isMicBleedFromAudience(micMsg.content, [
+              trimmed,
+              ...recentAudienceRef.current,
+            ])
+          ) {
+            dropMicIfBleed(micMsg.content, micLive.utteranceId);
+          }
+        }
       }
 
       const live = liveUtteranceRef.current[source];
@@ -584,12 +633,6 @@ export function ChatInterface() {
           if (finalizedUtterancesRef.current.size > 80) {
             finalizedUtterancesRef.current.clear();
           }
-          if (who === "them") {
-            recentAudienceRef.current = [
-              trimmed,
-              ...recentAudienceRef.current,
-            ].slice(0, 8);
-          }
           const finalized: ChatMessage = {
             id: live.messageId,
             role: "user",
@@ -606,6 +649,9 @@ export function ChatInterface() {
             trusted: true,
             uncertain: false,
           });
+          const recentBucket =
+            source === "microphone" ? recentMicTextsRef : recentMeetingTextsRef;
+          recentBucket.current = [trimmed, ...recentBucket.current].slice(0, 8);
           liveUtteranceRef.current[source] = undefined;
 
           if (who === "them") {
@@ -659,11 +705,11 @@ export function ChatInterface() {
         finalizedUtterancesRef.current.clear();
       }
 
+      const recentBucket =
+        source === "microphone" ? recentMicTextsRef : recentMeetingTextsRef;
+      recentBucket.current = [trimmed, ...recentBucket.current].slice(0, 8);
+
       if (source === "meeting") {
-        recentAudienceRef.current = [
-          trimmed,
-          ...recentAudienceRef.current,
-        ].slice(0, 8);
         appendSpeakerMessage(trimmed, "them", null, {
           originalText: meta.originalText,
           sessionId: meta.sessionId,
@@ -679,7 +725,7 @@ export function ChatInterface() {
         endedAtMs: meta.endedAtMs,
       });
     },
-    [appendSpeakerMessage],
+    [appendSpeakerMessage, dropMicIfBleed],
   );
 
   const {
@@ -692,17 +738,25 @@ export function ChatInterface() {
     transcribe: transcribeAudioBlob,
     getRecentTranscript: (source) =>
       sttContextRef.current.getPromptContext(source),
+    getRecentSameSourceTexts: (source) =>
+      source === "microphone"
+        ? recentMicTextsRef.current
+        : recentMeetingTextsRef.current,
     onSessionStart: (sessionId) => {
       sttContextRef.current.reset(sessionId);
       lastSegmentRef.current = {};
       liveUtteranceRef.current = {};
       finalizedUtterancesRef.current.clear();
+      recentMicTextsRef.current = [];
+      recentMeetingTextsRef.current = [];
     },
     onSessionEnd: () => {
       sttContextRef.current.clear();
       lastSegmentRef.current = {};
       liveUtteranceRef.current = {};
       finalizedUtterancesRef.current.clear();
+      recentMicTextsRef.current = [];
+      recentMeetingTextsRef.current = [];
       setMessages((prev) => {
         const next = prev.map((m) =>
           m.streaming ? { ...m, streaming: false } : m,
@@ -710,6 +764,17 @@ export function ChatInterface() {
         messagesRef.current = next;
         return next;
       });
+    },
+    onSegmentDiscarded: ({ source, utteranceId }) => {
+      const live = liveUtteranceRef.current[source];
+      if (!live || live.utteranceId !== utteranceId) return;
+      setMessages((prev) => {
+        const next = prev.filter((m) => m.id !== live.messageId);
+        messagesRef.current = next;
+        return next;
+      });
+      liveUtteranceRef.current[source] = undefined;
+      finalizedUtterancesRef.current.add(utteranceId);
     },
     onTranscript: onAudioTranscript,
     onError: (message) => setMicStatus(message),
@@ -1120,11 +1185,13 @@ export function ChatInterface() {
               type="button"
               className={`composer-input-mic${voiceListening ? " composer-input-mic--live" : ""}${voiceBusy ? " composer-input-mic--busy" : ""}`}
               onClick={() => toggleComposerVoice()}
-              disabled={sending || listening || voiceBusy}
+              disabled={sending || voiceBusy || (listening && !voiceListening)}
               title={
-                voiceListening
-                  ? "Stop voice input"
-                  : "Voice input — speak into the mic"
+                listening && !voiceListening
+                  ? "Stop meeting Record first to use composer voice input"
+                  : voiceListening
+                    ? "Stop voice input and convert to text"
+                    : "Voice input — tap, speak, tap again"
               }
               aria-label={
                 voiceListening

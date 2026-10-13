@@ -129,7 +129,8 @@ export function useComposerVoiceInput({
   onError,
   onStatus,
   maxMs = 60_000,
-  liveIntervalMs = 900,
+  /** Live STT while speaking; set 0 to only transcribe on stop (more reliable). */
+  liveIntervalMs = 0,
 }: Options) {
   const [listening, setListening] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -423,53 +424,63 @@ export function useComposerVoiceInput({
     revealGenRef.current += 1;
     liveAbortRef.current?.abort();
     liveAbortRef.current = null;
+    setListening(false);
+    setBusy(true);
+    onStatusRef.current?.("Converting speech to text…");
 
     const recorder = recorderRef.current;
     const mime = mimeRef.current;
 
-    const blob = await new Promise<Blob | null>((resolve) => {
-      if (!recorder || recorder.state === "inactive") {
-        resolve(
-          chunksRef.current.length
-            ? new Blob(chunksRef.current, { type: mime })
-            : null,
-        );
+    try {
+      // Flush the current timeslice so the last words are in the blob.
+      if (recorder && recorder.state === "recording") {
+        try {
+          recorder.requestData();
+        } catch {
+          /* older engines */
+        }
+      }
+
+      const blob = await new Promise<Blob | null>((resolve) => {
+        if (!recorder || recorder.state === "inactive") {
+          resolve(
+            chunksRef.current.length
+              ? new Blob(chunksRef.current, { type: mime })
+              : null,
+          );
+          return;
+        }
+        const finish = () => {
+          const parts = chunksRef.current;
+          chunksRef.current = [];
+          resolve(parts.length ? new Blob(parts, { type: mime }) : null);
+        };
+        recorder.onstop = finish;
+        try {
+          recorder.stop();
+        } catch {
+          finish();
+        }
+      });
+
+      mediaRef.current?.getTracks().forEach((t) => t.stop());
+      mediaRef.current = null;
+      recorderRef.current = null;
+
+      if (!blob || blob.size < 256) {
+        onErrorRef.current?.("No speech captured. Tap the mic and try again.");
         return;
       }
-      recorder.onstop = () => {
-        const parts = chunksRef.current;
-        chunksRef.current = [];
-        resolve(parts.length ? new Blob(parts, { type: mime }) : null);
-      };
-      try {
-        recorder.stop();
-      } catch {
-        resolve(null);
-      }
-    });
 
-    mediaRef.current?.getTracks().forEach((t) => t.stop());
-    mediaRef.current = null;
-    recorderRef.current = null;
-    setListening(false);
-
-    if (!blob || blob.size < 256) {
-      stoppingRef.current = false;
-      onErrorRef.current?.("No speech captured. Tap the mic and try again.");
-      return;
-    }
-
-    setBusy(true);
-    onStatusRef.current?.("Finishing speech-to-text…");
-    try {
       const result = await transcribeAudioBlob(blob);
-      const spoken = result.text.trim();
-      if (!spoken) {
+      if (!result.text.trim()) {
         onErrorRef.current?.(
-          "Could not hear clear speech. Try again a bit closer to the mic.",
+          result.originalText?.trim()
+            ? "That clip looked like silence filler and was ignored. Speak clearly, then tap the mic to stop."
+            : "Could not hear clear speech. Try again a bit closer to the mic.",
         );
       } else {
-        publishSpoken(spoken);
+        publishSpoken(result.text.trim());
       }
     } catch (err) {
       const message =
@@ -478,7 +489,12 @@ export function useComposerVoiceInput({
           : "Speech-to-text failed.";
       onErrorRef.current?.(message);
     } finally {
+      mediaRef.current?.getTracks().forEach((t) => t.stop());
+      mediaRef.current = null;
+      recorderRef.current = null;
       setBusy(false);
+      setListening(false);
+      listeningRef.current = false;
       stoppingRef.current = false;
       baselineRef.current = "";
       finalSpokenRef.current = "";
@@ -520,26 +536,39 @@ export function useComposerVoiceInput({
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
       };
-      recorder.start(200);
+      recorder.start(250);
       listeningRef.current = true;
       stoppingRef.current = false;
       intentionalStopRef.current = false;
       setListening(true);
-      onStatusRef.current?.("Listening… tap the mic icon when finished.");
+      setBusy(false);
+      onStatusRef.current?.(
+        "Listening… speak, then tap the mic icon again to convert to text.",
+      );
 
-      liveTimerRef.current = window.setInterval(() => {
-        void runLivePartial();
-      }, liveIntervalMs);
+      if (liveIntervalMs > 0) {
+        liveTimerRef.current = window.setInterval(() => {
+          void runLivePartial();
+        }, liveIntervalMs);
+      }
 
       maxTimerRef.current = window.setTimeout(() => {
         void finishWhisperRecording();
       }, maxMs);
-    } catch {
+    } catch (err) {
       cleanupWhisper();
       listeningRef.current = false;
+      stoppingRef.current = false;
       setListening(false);
+      setBusy(false);
+      const detail =
+        err instanceof Error && err.message
+          ? err.message
+          : "Microphone permission denied.";
       onErrorRef.current?.(
-        "Microphone permission denied. Allow mic access and try again.",
+        /denied|permission|NotAllowed/i.test(detail)
+          ? "Microphone permission denied. Allow mic access for System Bunny and try again."
+          : `Could not open microphone: ${detail}`,
       );
     }
   }, [

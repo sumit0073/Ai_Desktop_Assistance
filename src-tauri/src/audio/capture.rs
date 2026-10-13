@@ -8,12 +8,16 @@ use parking_lot::Mutex;
 
 use super::resample::{resample_mono_i16, to_mono_i16};
 use super::segmenter::{FinalizedSegment, SpeechSegmenter};
-use super::types::{AudioSourceKind, SourceCaptureStatus};
+use super::types::{AudioSourceKind, SourceCaptureStatus, SpeechEvidencePayload};
 use super::vad::WebRtcVoiceDetector;
-use super::validate::validate_segment;
+use super::validate::{validate_segment, SegmentEvidence, ValidatedSegment};
 use super::wav::segment_to_wav_bytes;
 
-pub type SegmentSink = Arc<dyn Fn(FinalizedSegment) + Send + Sync>;
+/// Accepted segment plus privacy-safe evidence for the frontend sanitizer.
+pub type AcceptedSegment = (FinalizedSegment, SpeechEvidencePayload);
+
+pub type SegmentSink = Arc<dyn Fn(AcceptedSegment) + Send + Sync>;
+pub type RejectSink = Arc<dyn Fn(FinalizedSegment, &'static str) + Send + Sync>;
 
 struct StreamGuard {
     _stream: Stream,
@@ -46,21 +50,28 @@ fn set_status(status: &Arc<Mutex<SourceCaptureStatus>>, next: SourceCaptureStatu
 }
 
 /// Start microphone capture (cpal default input) with VAD segmentation.
-pub fn start_microphone(sink: SegmentSink) -> Result<CaptureLane, SourceCaptureStatus> {
-    start_lane(AudioSourceKind::Microphone, false, sink)
+pub fn start_microphone(
+    sink: SegmentSink,
+    on_reject: RejectSink,
+) -> Result<CaptureLane, SourceCaptureStatus> {
+    start_lane(AudioSourceKind::Microphone, false, sink, on_reject)
 }
 
 /// Start meeting / system-audio capture.
 /// - Windows: WASAPI loopback via cpal input stream on the default output device.
 /// - macOS / others: unavailable (ScreenCaptureKit not wired yet) — explicit status.
-pub fn start_meeting(sink: SegmentSink) -> Result<CaptureLane, SourceCaptureStatus> {
+pub fn start_meeting(
+    sink: SegmentSink,
+    on_reject: RejectSink,
+) -> Result<CaptureLane, SourceCaptureStatus> {
     #[cfg(target_os = "windows")]
     {
-        start_lane(AudioSourceKind::Meeting, true, sink)
+        start_lane(AudioSourceKind::Meeting, true, sink, on_reject)
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = sink;
+        let _ = on_reject;
         Err(SourceCaptureStatus::Unavailable {
             reason: "Native meeting/system-audio capture is not yet available on this OS. On macOS, ScreenCaptureKit integration is required (permission + native bridge). Windows WASAPI loopback is supported."
                 .into(),
@@ -72,6 +83,7 @@ fn start_lane(
     kind: AudioSourceKind,
     loopback: bool,
     sink: SegmentSink,
+    on_reject: RejectSink,
 ) -> Result<CaptureLane, SourceCaptureStatus> {
     let host = cpal::default_host();
     let device = if loopback {
@@ -147,6 +159,7 @@ fn start_lane(
                     Arc::clone(&segmenter),
                     Arc::clone(&last_fp),
                     Arc::clone(&sink),
+                    Arc::clone(&on_reject),
                     err_fn,
                 ),
                 SampleFormat::I16 => build_i16_stream(
@@ -157,6 +170,7 @@ fn start_lane(
                     Arc::clone(&segmenter),
                     Arc::clone(&last_fp),
                     Arc::clone(&sink),
+                    Arc::clone(&on_reject),
                     err_fn,
                 ),
                 other => {
@@ -195,7 +209,7 @@ fn start_lane(
             }
 
             if let Some(seg) = segmenter.lock().flush() {
-                emit_if_valid(&seg, &last_fp, &sink);
+                emit_if_valid(&seg, &last_fp, &sink, &on_reject);
             }
             set_status(&status_thread, SourceCaptureStatus::Stopped);
         })
@@ -210,19 +224,36 @@ fn start_lane(
     })
 }
 
+fn evidence_payload(ev: &SegmentEvidence) -> SpeechEvidencePayload {
+    SpeechEvidencePayload {
+        duration_ms: ev.duration_ms,
+        peak_rms: ev.peak_rms,
+        audible_frames: ev.audible_frames,
+        clip_ratio: ev.clip_ratio,
+        zero_crossing_rate: ev.zero_crossing_rate,
+        crest_factor: ev.crest_factor,
+        tier: ev.tier,
+    }
+}
+
 fn emit_if_valid(
     seg: &FinalizedSegment,
     last_fp: &Arc<Mutex<Option<String>>>,
     sink: &SegmentSink,
+    on_reject: &RejectSink,
 ) {
     let mut guard = last_fp.lock();
     match validate_segment(seg, guard.as_deref()) {
-        Ok(fp) => {
-            *guard = Some(fp);
-            sink(seg.clone());
+        Ok(ValidatedSegment {
+            fingerprint,
+            evidence,
+        }) => {
+            *guard = Some(fingerprint);
+            sink((seg.clone(), evidence_payload(&evidence)));
         }
-        Err(_) => {
-            // Silent reject — no fabricated transcript.
+        Err(reason) => {
+            // No fabricated transcript — notify UI with privacy-safe reason only.
+            on_reject(seg.clone(), reason.as_str());
         }
     }
 }
@@ -236,6 +267,7 @@ fn build_f32_stream(
     segmenter: Arc<Mutex<SpeechSegmenter<WebRtcVoiceDetector>>>,
     last_fp: Arc<Mutex<Option<String>>>,
     sink: SegmentSink,
+    on_reject: RejectSink,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<Stream, SourceCaptureStatus> {
     device
@@ -246,7 +278,7 @@ fn build_f32_stream(
                 let pcm16k = resample_mono_i16(&mono, sample_rate, 16_000);
                 let segments = segmenter.lock().push_pcm(&pcm16k);
                 for seg in segments {
-                    emit_if_valid(&seg, &last_fp, &sink);
+                    emit_if_valid(&seg, &last_fp, &sink, &on_reject);
                 }
             },
             err_fn,
@@ -266,6 +298,7 @@ fn build_i16_stream(
     segmenter: Arc<Mutex<SpeechSegmenter<WebRtcVoiceDetector>>>,
     last_fp: Arc<Mutex<Option<String>>>,
     sink: SegmentSink,
+    on_reject: RejectSink,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<Stream, SourceCaptureStatus> {
     device
@@ -289,7 +322,7 @@ fn build_i16_stream(
                 let pcm16k = resample_mono_i16(&mono, sample_rate, 16_000);
                 let segments = segmenter.lock().push_pcm(&pcm16k);
                 for seg in segments {
-                    emit_if_valid(&seg, &last_fp, &sink);
+                    emit_if_valid(&seg, &last_fp, &sink, &on_reject);
                 }
             },
             err_fn,

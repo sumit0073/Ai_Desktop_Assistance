@@ -34,6 +34,20 @@ pub struct MeetingCaptureStatus {
     pub meeting: SourceCaptureStatus,
 }
 
+/// Privacy-safe acoustic summary attached to segments sent for STT.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechEvidencePayload {
+    pub duration_ms: u32,
+    pub peak_rms: f32,
+    pub audible_frames: u32,
+    pub clip_ratio: f32,
+    pub zero_crossing_rate: f32,
+    pub crest_factor: f32,
+    /// `strong` | `marginal`
+    pub tier: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechSegmentEvent {
@@ -49,6 +63,18 @@ pub struct SpeechSegmentEvent {
     pub wav_base64: String,
     /// `"partial"` while speech continues; `"finalized"` after end-of-speech.
     pub status: &'static str,
+    pub evidence: SpeechEvidencePayload,
+}
+
+/// Pre-STT rejection — no PCM, no transcript text.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentRejectedEvent {
+    pub source: AudioSourceKind,
+    pub reason: &'static str,
+    pub duration_ms: u32,
+    pub is_partial: bool,
+    pub utterance_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

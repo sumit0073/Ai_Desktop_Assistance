@@ -6,11 +6,13 @@ use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use super::capture::{encode_segment_wav, start_meeting, start_microphone, CaptureLane, SegmentSink};
+use super::capture::{
+    encode_segment_wav, start_meeting, start_microphone, CaptureLane, RejectSink, SegmentSink,
+};
 use super::segmenter::FinalizedSegment;
 use super::types::{
-    AudioPipelineError, AudioSourceKind, MeetingCaptureStatus, SourceCaptureStatus,
-    SpeechSegmentEvent,
+    AudioPipelineError, AudioSourceKind, MeetingCaptureStatus, SegmentRejectedEvent,
+    SourceCaptureStatus, SpeechEvidencePayload, SpeechSegmentEvent,
 };
 
 const MAX_PENDING_SEGMENTS: usize = 4;
@@ -75,7 +77,7 @@ fn emit_status(app: &AppHandle, status: &MeetingCaptureStatus) {
 }
 
 fn make_segment_sink(app: AppHandle, pending: Arc<AtomicUsize>) -> SegmentSink {
-    Arc::new(move |segment: FinalizedSegment| {
+    Arc::new(move |(segment, evidence): (FinalizedSegment, SpeechEvidencePayload)| {
         let current = pending.load(Ordering::SeqCst);
         // Drop interim partials when the UI/STT queue is busy so finals stay responsive.
         if segment.is_partial && current > 0 {
@@ -109,11 +111,29 @@ fn make_segment_sink(app: AppHandle, pending: Arc<AtomicUsize>) -> SegmentSink {
             } else {
                 "finalized"
             },
+            evidence,
         };
 
         if app.emit("seecog://speech-segment", &event).is_err() {
             pending.fetch_sub(1, Ordering::SeqCst);
         }
+    })
+}
+
+fn make_reject_sink(app: AppHandle) -> RejectSink {
+    Arc::new(move |segment: FinalizedSegment, reason: &'static str| {
+        let duration_ms =
+            (segment.pcm_i16.len() as u64 * 1000 / segment.sample_rate.max(1) as u64) as u32;
+        let _ = app.emit(
+            "seecog://segment-rejected",
+            SegmentRejectedEvent {
+                source: segment.source,
+                reason,
+                duration_ms,
+                is_partial: segment.is_partial,
+                utterance_id: segment.utterance_id.clone(),
+            },
+        );
     })
 }
 
@@ -155,10 +175,12 @@ pub fn start_meeting_capture(
 
     let mic_sink = make_segment_sink(app.clone(), Arc::clone(&pending));
     let meeting_sink = make_segment_sink(app.clone(), Arc::clone(&pending));
+    let mic_reject = make_reject_sink(app.clone());
+    let meeting_reject = make_reject_sink(app.clone());
 
     let mut meeting_status_override: Option<SourceCaptureStatus> = None;
 
-    let microphone = match start_microphone(mic_sink) {
+    let microphone = match start_microphone(mic_sink, mic_reject) {
         Ok(lane) => Some(lane),
         Err(status) => {
             let msg = match &status {
@@ -173,7 +195,7 @@ pub fn start_meeting_capture(
         }
     };
 
-    let meeting = match start_meeting(meeting_sink) {
+    let meeting = match start_meeting(meeting_sink, meeting_reject) {
         Ok(lane) => Some(lane),
         Err(status) => {
             let msg = match &status {

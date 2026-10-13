@@ -24,9 +24,9 @@ impl WebRtcVoiceDetector {
     pub fn new() -> Result<Self, String> {
         let mut vad = Vad::new();
         vad.set_sample_rate(SampleRate::Rate16kHz);
-        // Quality keeps more of soft / fast speech than Aggressive (which can
-        // chop uncommon words and hurt Whisper accuracy).
-        vad.set_mode(VadMode::Quality);
+        // Aggressive cuts false speech on silence/fan noise that otherwise
+        // becomes Whisper "thank you" / "you are welcome" hallucinations.
+        vad.set_mode(VadMode::Aggressive);
         Ok(Self { vad })
     }
 }
@@ -53,7 +53,7 @@ pub fn frame_rms(frame: &[i16]) -> f32 {
 }
 
 /// Default silence floor for ordinary meeting speech (normalized 0–1).
-pub const SILENCE_RMS_THRESHOLD: f32 = 0.012;
+pub const SILENCE_RMS_THRESHOLD: f32 = 0.014;
 
 pub fn is_audible_frame(frame: &[i16]) -> bool {
     frame_rms(frame) >= SILENCE_RMS_THRESHOLD

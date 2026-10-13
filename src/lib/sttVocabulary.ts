@@ -91,6 +91,8 @@ export function buildWhisperPrompt(options?: {
   // can mangle everyday / science words (e.g. mitochondria → unrelated phrases).
   const parts = [
     "Transcribe only clear speech accurately; leave empty if none.",
+    "If the audio is silent, noise, or unclear, return an empty string.",
+    "Never invent courtesy lines like thank you, you are welcome, or subscribe.",
     "Write the exact words spoken. Do not invent a different topic.",
     `Spelling hints if those words are actually heard: ${vocabBlock}.`,
   ];

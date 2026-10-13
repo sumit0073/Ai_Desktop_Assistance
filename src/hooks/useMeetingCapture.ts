@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { recordSttDiagnostic } from "../lib/sttDiagnostics";
+import type { SpeechEvidenceTier } from "../lib/sanitizeTranscript";
 
 export type MeetingAudioSource = "microphone" | "meeting";
 
@@ -23,6 +25,16 @@ export type MeetingCaptureStatus = {
   meeting: unknown;
 };
 
+export type SpeechEvidencePayload = {
+  durationMs?: number;
+  peakRms?: number;
+  audibleFrames?: number;
+  clipRatio?: number;
+  zeroCrossingRate?: number;
+  crestFactor?: number;
+  tier?: SpeechEvidenceTier;
+};
+
 export type SpeechSegmentEvent = {
   id: string;
   utteranceId?: string;
@@ -33,6 +45,15 @@ export type SpeechSegmentEvent = {
   durationMs: number;
   wavBase64: string;
   status: string;
+  evidence?: SpeechEvidencePayload;
+};
+
+export type SegmentRejectedEvent = {
+  source: MeetingAudioSource;
+  reason: string;
+  durationMs: number;
+  isPartial: boolean;
+  utteranceId: string;
 };
 
 export type AudioPipelineError = {
@@ -43,6 +64,10 @@ export type AudioPipelineError = {
 type TranscriptResultLike = {
   originalText: string;
   text: string;
+  outcome?: string;
+  rejectionReason?: string;
+  model?: string;
+  requestId?: string;
 };
 
 type Options = {
@@ -53,10 +78,25 @@ type Options = {
       recentTranscript?: string;
       interim?: boolean;
       signal?: AbortSignal;
+      speechEvidence?: SpeechEvidenceTier;
+      recentSameSourceTexts?: string[];
+      source?: MeetingAudioSource;
+      durationMs?: number;
+      sampleRate?: number;
+      peakRms?: number;
+      audibleFrames?: number;
+      zcr?: number;
+      crest?: number;
+      utteranceId?: string;
+      segmentId?: string;
+      wavBytes?: number;
+      mime?: string;
     },
   ) => Promise<string | TranscriptResultLike>;
   /** Same-source rolling context for Whisper prompt. */
   getRecentTranscript?: (source: MeetingAudioSource) => string;
+  /** Recent same-source UI texts (for repeated weak-phrase detection). */
+  getRecentSameSourceTexts?: (source: MeetingAudioSource) => string[];
   /** Fired when a new capture session successfully starts (reset context). */
   onSessionStart?: (sessionId: string) => void;
   /** Fired when capture stops or the hook unmounts. */
@@ -75,6 +115,16 @@ type Options = {
       isPartial: boolean;
     },
   ) => void | Promise<void>;
+  /**
+   * Segment produced no usable transcript (empty STT / hallucination /
+   * pre-STT reject). Clear any live partial bubble for this utterance.
+   */
+  onSegmentDiscarded?: (meta: {
+    source: MeetingAudioSource;
+    utteranceId: string;
+    reason: string;
+    isPartial: boolean;
+  }) => void;
   onError?: (message: string, source?: MeetingAudioSource) => void;
   onStatus?: (message: string) => void;
 };
@@ -153,12 +203,22 @@ function base64ToWavBlob(base64: string): Blob {
  * Native dual-source meeting capture (Tauri/Rust + WebRTC VAD).
  * Only finalized, VAD-validated speech segments are transcribed.
  */
+function evidenceTier(
+  evidence: SpeechEvidencePayload | undefined,
+): SpeechEvidenceTier {
+  const t = evidence?.tier;
+  if (t === "strong" || t === "marginal") return t;
+  return "unknown";
+}
+
 export function useMeetingCapture({
   transcribe,
   getRecentTranscript,
+  getRecentSameSourceTexts,
   onSessionStart,
   onSessionEnd,
   onTranscript,
+  onSegmentDiscarded,
   onError,
   onStatus,
 }: Options) {
@@ -169,12 +229,14 @@ export function useMeetingCapture({
   const [micMutedHint, setMicMutedHint] = useState(false);
 
   const onTranscriptRef = useRef(onTranscript);
+  const onSegmentDiscardedRef = useRef(onSegmentDiscarded);
   const onErrorRef = useRef(onError);
   const onStatusRef = useRef(onStatus);
   const onSessionStartRef = useRef(onSessionStart);
   const onSessionEndRef = useRef(onSessionEnd);
   const transcribeRef = useRef(transcribe);
   const getRecentRef = useRef(getRecentTranscript);
+  const getRecentSameRef = useRef(getRecentSameSourceTexts);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
   /** Per-source abort so a newer partial/final supersedes an in-flight STT call. */
@@ -188,6 +250,9 @@ export function useMeetingCapture({
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
   }, [onTranscript]);
+  useEffect(() => {
+    onSegmentDiscardedRef.current = onSegmentDiscarded;
+  }, [onSegmentDiscarded]);
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
@@ -206,6 +271,9 @@ export function useMeetingCapture({
   useEffect(() => {
     getRecentRef.current = getRecentTranscript;
   }, [getRecentTranscript]);
+  useEffect(() => {
+    getRecentSameRef.current = getRecentSameSourceTexts;
+  }, [getRecentSameSourceTexts]);
 
   const applyStatus = useCallback((status: MeetingCaptureStatus) => {
     setListening(status.recording);
@@ -275,10 +343,28 @@ export function useMeetingCapture({
                 const blob = base64ToWavBlob(payload.wavBase64);
                 const recent =
                   getRecentRef.current?.(payload.source) ?? "";
+                const recentSame =
+                  getRecentSameRef.current?.(payload.source) ?? [];
+                const tier = evidenceTier(payload.evidence);
+                const ev = payload.evidence;
                 const result = await transcribeRef.current(blob, {
-                  recentTranscript: recent,
+                  // Finals only — interim + rolling context biases hallucinations.
+                  recentTranscript: isPartial ? undefined : recent,
                   interim: isPartial,
                   signal: laneAbort.signal,
+                  speechEvidence: tier,
+                  recentSameSourceTexts: recentSame,
+                  source: payload.source,
+                  durationMs: payload.durationMs,
+                  sampleRate: payload.sampleRate,
+                  peakRms: ev?.peakRms,
+                  audibleFrames: ev?.audibleFrames,
+                  zcr: ev?.zeroCrossingRate,
+                  crest: ev?.crestFactor,
+                  utteranceId,
+                  segmentId: payload.id,
+                  wavBytes: blob.size,
+                  mime: blob.type || "audio/wav",
                 });
                 if (
                   epochAtStart !== sessionEpochRef.current ||
@@ -303,6 +389,18 @@ export function useMeetingCapture({
                     endedAtMs: payload.endedAtMs,
                     originalText: originalText || text,
                     sessionId: sessionAtStart,
+                    isPartial,
+                  });
+                } else {
+                  const reason =
+                    typeof result === "string"
+                      ? "stt_empty"
+                      : (result.rejectionReason ??
+                        (originalText ? "rejected_hallucination" : "stt_empty"));
+                  onSegmentDiscardedRef.current?.({
+                    source: payload.source,
+                    utteranceId,
+                    reason,
                     isPartial,
                   });
                 }
@@ -354,12 +452,36 @@ export function useMeetingCapture({
             onErrorRef.current?.(event.payload.message, event.payload.source);
           },
         );
+        const u4 = await listen<SegmentRejectedEvent>(
+          "seecog://segment-rejected",
+          (event) => {
+            const p = event.payload;
+            if (!p?.reason) return;
+            recordSttDiagnostic({
+              outcome: "rejected_before_stt",
+              source: p.source,
+              durationMs: p.durationMs,
+              audioValidation: p.reason,
+              rejectionReason: p.reason,
+              interim: p.isPartial,
+            });
+            if (p.utteranceId) {
+              onSegmentDiscardedRef.current?.({
+                source: p.source,
+                utteranceId: p.utteranceId,
+                reason: p.reason,
+                isPartial: p.isPartial,
+              });
+            }
+          },
+        );
         if (cancelled) {
           u1();
           u2();
           u3();
+          u4();
         } else {
-          unsubs = [u1, u2, u3];
+          unsubs = [u1, u2, u3, u4];
         }
       } catch {
         // Browser preview without Tauri.
