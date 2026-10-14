@@ -160,22 +160,42 @@ jobs:
       - name: List release files
         run: find dist-dmg -type f -name '*.dmg' -print
 
+      - name: Remove previous app-v* releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: app-v${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(gh release list --limit 100 --json tagName -q '.[].tagName' || true)
+          for tag in "${tags[@]:-}"; do
+            [ -z "$tag" ] && continue
+            case "$tag" in
+              app-v*)
+                if [ "$tag" != "$NEW_TAG" ]; then
+                  echo "Deleting previous release $tag"
+                  gh release delete "$tag" --yes --cleanup-tag || true
+                fi
+                ;;
+            esac
+          done
+
       - name: Create GitHub Release with DMGs
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.ver.outputs.version }}
           name: System Bunny v${{ steps.ver.outputs.version }}
           body: |
-            Download a `.dmg` below and open it on your Mac.
+            **System Bunny v${{ steps.ver.outputs.version }}** — macOS installers.
 
             - **Apple Silicon** (M1/M2/M3/M4): file name contains `aarch64`
             - **Intel Mac**: file name contains `x64` or `x86_64`
 
             First open: right-click the app → **Open** (unsigned / ad-hoc signed build).
-          # Glob string (not a YAML/JS array) — softprops splits on newlines/spaces
+            Previous `app-v*` releases are removed when this workflow publishes.
           files: dist-dmg/*.dmg
           fail_on_unmatched_files: true
           generate_release_notes: false
           make_latest: true
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

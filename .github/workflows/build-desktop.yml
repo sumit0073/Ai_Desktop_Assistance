@@ -239,13 +239,33 @@ jobs:
         run: |
           find dist -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' \) -print
 
-      - name: Create or update GitHub Release
+      - name: Remove previous app-v* releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: app-v${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Drop older installer releases so only the new version remains.
+          mapfile -t tags < <(gh release list --limit 100 --json tagName -q '.[].tagName' || true)
+          for tag in "${tags[@]:-}"; do
+            [ -z "$tag" ] && continue
+            case "$tag" in
+              app-v*)
+                if [ "$tag" != "$NEW_TAG" ]; then
+                  echo "Deleting previous release $tag"
+                  gh release delete "$tag" --yes --cleanup-tag || true
+                fi
+                ;;
+            esac
+          done
+
+      - name: Create GitHub Release (latest only)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.ver.outputs.version }}
           name: System Bunny v${{ steps.ver.outputs.version }}
           body: |
-            Download an installer for your platform (desktop app — not an Android APK).
+            **System Bunny v${{ steps.ver.outputs.version }}** — latest desktop installers.
 
             ### Windows
             - **Setup (.exe)** — NSIS installer (recommended)
@@ -257,7 +277,7 @@ jobs:
             - **Intel** — filename contains `x64` / `x86_64`
             - First open: right-click the app → **Open** (ad-hoc signed build)
 
-            You can also grab files from the workflow run **Artifacts** if the release step is still uploading.
+            Previous `app-v*` releases are removed when this workflow publishes.
           files: |
             dist/windows/*.exe
             dist/windows/*.msi
@@ -265,5 +285,6 @@ jobs:
           fail_on_unmatched_files: false
           generate_release_notes: true
           make_latest: true
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
