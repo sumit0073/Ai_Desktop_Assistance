@@ -13,7 +13,7 @@ import {
 import "./App.css";
 
 function App() {
-  const { user, loading, enterDemo, configured } = useAuth();
+  const { user, loading } = useAuth();
   const { active, startSession } = useWorkSession();
 
   useShortcutBridge();
@@ -23,33 +23,6 @@ function App() {
       // Running in browser preview without Tauri — ignore.
     });
   }, []);
-
-  // Before login: demo shortcut opens auth home (demo user → start screen).
-  useEffect(() => {
-    if (user || configured) return;
-
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-
-    listen<ShortcutEvent>("seecog://shortcut", (event) => {
-      if (
-        event.payload.action === "screenshot-analyze" ||
-        event.payload.action === "analyze-chat"
-      ) {
-        enterDemo();
-      }
-    })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {});
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [user, configured, enterDemo]);
 
   // Logged in but idle: auto-start session when a capture/ask shortcut fires.
   useEffect(() => {

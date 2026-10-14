@@ -53,6 +53,13 @@ export function validatePasswordConfirm(
   return null;
 }
 
+export function validateOtpCode(token: string): string | null {
+  const value = token.trim();
+  if (!value) return "Enter the code we sent you.";
+  if (!/^\d{6}$/.test(value)) return "Enter the 6-digit code.";
+  return null;
+}
+
 /** Avoid leaking raw provider errors to the UI. */
 export function mapAuthError(message: string | undefined): string {
   if (!message) return "Something went wrong. Please try again.";
@@ -70,11 +77,53 @@ export function mapAuthError(message: string | undefined): string {
   if (lower.includes("password should be at least")) {
     return "Password does not meet security requirements.";
   }
+  if (
+    lower.includes("otp") &&
+    (lower.includes("expired") || lower.includes("invalid") || lower.includes("token"))
+  ) {
+    return "That code is invalid or expired. Request a new one.";
+  }
+  if (lower.includes("token has expired") || lower.includes("invalid token")) {
+    return "That code is invalid or expired. Request a new one.";
+  }
+  if (lower.includes("otp_disabled") || lower.includes("signups not allowed for otp")) {
+    return "No account found for that email or phone. Sign up first with that phone, or use password sign-in.";
+  }
+  if (
+    lower.includes("user not found") ||
+    lower.includes("unable to validate email") ||
+    (lower.includes("phone") && lower.includes("not found"))
+  ) {
+    return "No account found for that email or phone. Sign up first, or use password sign-in.";
+  }
+  if (
+    lower.includes("phone provider") ||
+    lower.includes("unsupported phone") ||
+    lower.includes("sms provider")
+  ) {
+    return "Phone sign-in isn’t enabled yet. Enable Phone auth and the Send SMS hook in the Supabase Dashboard.";
+  }
+  if (
+    lower.includes("sms") &&
+    (lower.includes("provider") || lower.includes("twilio") || lower.includes("not enabled"))
+  ) {
+    return "SMS sign-in isn’t configured yet. Enable Phone auth and an SMS provider in the Supabase Dashboard.";
+  }
+  if (lower.includes("phone") && lower.includes("provider")) {
+    return "SMS sign-in isn’t configured yet. Enable Phone auth and an SMS provider in the Supabase Dashboard.";
+  }
   if (lower.includes("rate limit") || lower.includes("too many")) {
     return "Too many attempts. Wait a moment and try again.";
   }
   if (lower.includes("network") || lower.includes("fetch")) {
     return "Network error. Check your connection and try again.";
+  }
+  if (
+    lower.includes("redirect") ||
+    lower.includes("redirect_uri") ||
+    lower.includes("not allowed")
+  ) {
+    return "Password reset redirect isn’t configured in Supabase. Add your redirect URL under Authentication → URL Configuration.";
   }
 
   return "Unable to complete authentication. Please try again.";

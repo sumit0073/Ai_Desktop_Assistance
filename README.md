@@ -51,11 +51,11 @@ If `cargo` fails with `linker link.exe not found`, install [Visual Studio Build 
 ### Auth flow
 
 - `src/pages/LoginPage.tsx` — email/password sign-in via Supabase Auth  
+- `src/pages/OtpLoginPage.tsx` — email or SMS one-time code sign-in  
 - `src/pages/SignupPage.tsx` — name, email, phone, password + strength meter  
 - Sessions are persisted with PKCE; app usage rows go to `public.sessions`  
-- Put only the **anon** key in `.env` (never `service_role`)
-
-Without a real anon key, use **Continue in demo mode** on the landing page.
+- Put only the **anon** key in `.env` (never `service_role`)  
+- OTP provider setup: [`docs/auth-otp-setup.md`](docs/auth-otp-setup.md)
 
 ### Global shortcuts (Tauri)
 

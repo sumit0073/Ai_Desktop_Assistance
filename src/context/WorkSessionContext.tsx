@@ -27,9 +27,7 @@ export function WorkSessionProvider({ children }: { children: ReactNode }) {
 
   const startSession = useCallback(async () => {
     if (!user) return;
-    if (user.id !== "demo-user") {
-      await startAppSession(user.id);
-    }
+    await startAppSession(user.id);
     setActive(true);
   }, [user]);
 

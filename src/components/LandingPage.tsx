@@ -1,12 +1,14 @@
 import { useState } from "react";
+import { ForgotPasswordPage } from "../pages/ForgotPasswordPage";
 import { LoginPage } from "../pages/LoginPage";
+import { OtpLoginPage } from "../pages/OtpLoginPage";
 import { SignupPage } from "../pages/SignupPage";
 import { AuthTabs } from "./AuthTabs";
 import { ThemeToggle } from "./ThemeToggle";
 import { WindowControls } from "./WindowControls";
 import bunnyLogo from "../assets/system-bunny-logo.png";
 
-type AuthView = "login" | "signup";
+type AuthView = "login" | "signup" | "forgot" | "otp";
 
 export function LandingPage() {
   const [view, setView] = useState<AuthView>("login");
@@ -14,9 +16,18 @@ export function LandingPage() {
 
   const switchView = (next: AuthView) => {
     if (next === view) return;
-    if (next === "signup") setAuthNotice(null);
+    if (next === "signup" || next === "forgot" || next === "otp") {
+      setAuthNotice(null);
+    }
     setView(next);
   };
+
+  const backToLogin = (notice?: string | null) => {
+    setAuthNotice(notice ?? null);
+    setView("login");
+  };
+
+  const showTabs = view === "login" || view === "signup";
 
   return (
     <div className={`shell landing landing--${view}`}>
@@ -40,20 +51,43 @@ export function LandingPage() {
               without leaving your screen.
             </p>
           )}
+          {view === "forgot" && (
+            <p className="tagline">Reset your password and get back to work.</p>
+          )}
+          {view === "otp" && (
+            <p className="tagline">
+              Sign in with a one-time code sent to your email or phone.
+            </p>
+          )}
         </section>
 
         <div className="auth-panel">
-          <AuthTabs active={view} onChange={switchView} />
+          {showTabs && (
+            <AuthTabs
+              active={view}
+              onChange={(next) => switchView(next)}
+            />
+          )}
           <div key={view} className="auth-panel__body">
-            {view === "login" ? (
-              <LoginPage notice={authNotice} />
-            ) : (
+            {view === "login" && (
+              <LoginPage
+                notice={authNotice}
+                onForgotPassword={() => switchView("forgot")}
+                onOtpLogin={() => switchView("otp")}
+              />
+            )}
+            {view === "signup" && (
               <SignupPage
                 onSwitchToLogin={(notice) => {
-                  setAuthNotice(notice ?? null);
-                  switchView("login");
+                  backToLogin(notice ?? null);
                 }}
               />
+            )}
+            {view === "forgot" && (
+              <ForgotPasswordPage onBackToLogin={backToLogin} />
+            )}
+            {view === "otp" && (
+              <OtpLoginPage onBackToLogin={() => backToLogin()} />
             )}
           </div>
         </div>

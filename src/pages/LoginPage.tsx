@@ -1,26 +1,25 @@
 import { useState, type FormEvent } from "react";
 import { PasswordField } from "../components/PasswordField";
 import { useAuth } from "../context/AuthContext";
-import { DEMO_CREDENTIALS } from "../lib/demoCredentials";
 import { validateEmail } from "../lib/validation";
 
 type Props = {
   notice?: string | null;
+  onForgotPassword?: () => void;
+  onOtpLogin?: () => void;
 };
 
-export function LoginPage({ notice = null }: Props) {
+export function LoginPage({
+  notice = null,
+  onForgotPassword,
+  onOtpLogin,
+}: Props) {
   const { signIn, configured } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  const fillDemo = () => {
-    setEmail(DEMO_CREDENTIALS.email);
-    setPassword(DEMO_CREDENTIALS.password);
-    setError(null);
-  };
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -65,27 +64,34 @@ export function LoginPage({ notice = null }: Props) {
         />
       </label>
 
-      <PasswordField
-        label="Password"
-        name="password"
-        autoComplete="current-password"
-        required
-        value={password}
-        onChange={setPassword}
-        placeholder="Your password"
-        visible={showPassword}
-        onToggleVisible={() => setShowPassword((v) => !v)}
-      />
+      <div className="auth-password-block">
+        <PasswordField
+          label="Password"
+          name="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={setPassword}
+          placeholder="Your password"
+          visible={showPassword}
+          onToggleVisible={() => setShowPassword((v) => !v)}
+        />
+        {onForgotPassword && (
+          <button
+            type="button"
+            className="link-btn auth-forgot-link"
+            onClick={onForgotPassword}
+          >
+            Forgot password?
+          </button>
+        )}
+      </div>
 
       {!configured && (
         <p className="auth-hint">
           Connect Supabase in <code>.env</code> to enable real auth.
         </p>
       )}
-      <p className="auth-hint">
-        Demo — email <code>{DEMO_CREDENTIALS.email}</code>, password{" "}
-        <code>{DEMO_CREDENTIALS.password}</code>
-      </p>
       {notice && (
         <p className="auth-notice" role="status">
           {notice}
@@ -101,9 +107,14 @@ export function LoginPage({ notice = null }: Props) {
         {submitting ? "Signing in…" : "Sign in"}
       </button>
 
-      <button type="button" className="btn btn-ghost demo-row" onClick={fillDemo}>
-        Use demo credentials
-      </button>
+      {onOtpLogin && (
+        <p className="auth-switch">
+          Prefer a code?{" "}
+          <button type="button" className="link-btn" onClick={onOtpLogin}>
+            Sign in with OTP
+          </button>
+        </p>
+      )}
     </form>
   );
 }

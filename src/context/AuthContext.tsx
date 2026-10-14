@@ -7,7 +7,6 @@ import {
 } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { endAppSession } from "../lib/appSessions";
-import { DEMO_CREDENTIALS, isDemoLogin } from "../lib/demoCredentials";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { mapAuthError, normalizeEmail, normalizePhone } from "../lib/validation";
 
@@ -23,6 +22,20 @@ export type SignInInput = {
   password: string;
 };
 
+export type PasswordResetInput = {
+  email: string;
+};
+
+export type OtpChannel = "email" | "sms";
+
+export type SendOtpInput =
+  | { channel: "email"; email: string }
+  | { channel: "sms"; phone: string };
+
+export type VerifyOtpInput =
+  | { channel: "email"; email: string; token: string }
+  | { channel: "sms"; phone: string; token: string };
+
 export type AuthResult = {
   error: string | null;
 };
@@ -32,19 +45,25 @@ type AuthContextValue = {
   session: Session | null;
   loading: boolean;
   configured: boolean;
-  demoMode: boolean;
   signIn: (input: SignInInput) => Promise<AuthResult>;
   signUp: (input: SignUpInput) => Promise<AuthResult>;
-  enterDemo: () => void;
+  requestPasswordReset: (input: PasswordResetInput) => Promise<AuthResult>;
+  sendOtp: (input: SendOtpInput) => Promise<AuthResult>;
+  verifyOtp: (input: VerifyOtpInput) => Promise<AuthResult>;
   signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function missingConfigError(): AuthResult {
+  return {
+    error: "Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.",
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [demoMode, setDemoMode] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -81,16 +100,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = async ({ email, password }: SignInInput): Promise<AuthResult> => {
-    if (isDemoLogin(email, password)) {
-      enterDemo();
-      return { error: null };
-    }
-
-    if (!supabase) {
-      return {
-        error: "Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.",
-      };
-    }
+    if (!supabase) return missingConfigError();
 
     const { error } = await supabase.auth.signInWithPassword({
       email: normalizeEmail(email),
@@ -106,13 +116,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     phone,
     password,
   }: SignUpInput): Promise<AuthResult> => {
-    if (!supabase) {
-      return {
-        error: "Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.",
-      };
-    }
+    if (!supabase) return missingConfigError();
 
     const normalizedEmail = normalizeEmail(email);
+    const normalizedPhone = normalizePhone(phone);
 
     const { data, error } = await supabase.auth.signUp({
       email: normalizedEmail,
@@ -120,7 +127,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options: {
         data: {
           full_name: name.trim(),
-          phone: normalizePhone(phone),
+          phone: normalizedPhone,
         },
       },
     });
@@ -135,7 +142,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { error: mapAuthError("User already registered") };
     }
 
-    // Keep the user on Login after signup (do not auto-enter the app).
+    // Phone for SMS OTP is copied onto auth.users by the DB trigger (digits, no '+').
+    // Avoid updateUser({ phone }) here — with phone confirmations on it leaves a
+    // pending phone_change and can break OTP login.
     if (data.session) {
       await supabase.auth.signOut();
     }
@@ -143,21 +152,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: null };
   };
 
-  const enterDemo = () => {
-    setDemoMode(true);
-    setUser({
-      id: DEMO_CREDENTIALS.userId,
-      email: DEMO_CREDENTIALS.email,
-      email_confirmed_at: new Date().toISOString(),
-      app_metadata: {},
-      user_metadata: { full_name: DEMO_CREDENTIALS.fullName },
-      aud: "authenticated",
-      created_at: new Date().toISOString(),
-    } as User);
+  const requestPasswordReset = async ({
+    email,
+  }: PasswordResetInput): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+
+    const redirectTo = import.meta.env.VITE_AUTH_REDIRECT_URL?.trim() || undefined;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      normalizeEmail(email),
+      {
+        ...(redirectTo ? { redirectTo } : {}),
+      },
+    );
+
+    return { error: error ? mapAuthError(error.message) : null };
+  };
+
+  const sendOtp = async (input: SendOtpInput): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+
+    if (input.channel === "email") {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: normalizeEmail(input.email),
+        options: {
+          shouldCreateUser: false,
+        },
+      });
+      return { error: error ? mapAuthError(error.message) : null };
+    }
+
+    const { error } = await supabase.auth.signInWithOtp({
+      phone: normalizePhone(input.phone),
+      options: {
+        shouldCreateUser: false,
+        channel: "sms",
+      },
+    });
+
+    return { error: error ? mapAuthError(error.message) : null };
+  };
+
+  const verifyOtp = async (input: VerifyOtpInput): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+
+    const token = input.token.trim();
+
+    if (input.channel === "email") {
+      const { error } = await supabase.auth.verifyOtp({
+        email: normalizeEmail(input.email),
+        token,
+        type: "email",
+      });
+      return { error: error ? mapAuthError(error.message) : null };
+    }
+
+    const { error } = await supabase.auth.verifyOtp({
+      phone: normalizePhone(input.phone),
+      token,
+      type: "sms",
+    });
+
+    return { error: error ? mapAuthError(error.message) : null };
   };
 
   const signOut = async () => {
-    setDemoMode(false);
     await endAppSession();
     setUser(null);
     setSession(null);
@@ -172,10 +231,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         loading,
         configured: isSupabaseConfigured,
-        demoMode,
         signIn,
         signUp,
-        enterDemo,
+        requestPasswordReset,
+        sendOtp,
+        verifyOtp,
         signOut,
       }}
     >

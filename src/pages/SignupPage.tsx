@@ -23,7 +23,7 @@ type Props = {
 };
 
 export function SignupPage({ onSwitchToLogin }: Props) {
-  const { signUp, configured, enterDemo } = useAuth();
+  const { signUp, configured } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [country, setCountry] = useState<PhoneCountrySelection>(getDefaultSelection);
@@ -84,7 +84,9 @@ export function SignupPage({ onSwitchToLogin }: Props) {
     setPassword("");
     setConfirmPassword("");
     setSubmitting(false);
-    onSwitchToLogin("Account created. Sign in with your email and password.");
+    onSwitchToLogin(
+      "Account created. Sign in with your password, or use email/SMS OTP.",
+    );
   };
 
   return (
@@ -188,16 +190,6 @@ export function SignupPage({ onSwitchToLogin }: Props) {
       <button type="submit" className="btn btn-primary" disabled={submitting}>
         {submitting ? "Creating account…" : "Create account"}
       </button>
-
-      {!configured && (
-        <button
-          type="button"
-          className="btn btn-ghost demo-row"
-          onClick={enterDemo}
-        >
-          Continue in demo mode
-        </button>
-      )}
 
       <p className="auth-switch">
         Already have an account?{" "}

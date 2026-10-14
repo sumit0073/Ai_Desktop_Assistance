@@ -1,5 +1,6 @@
-# Minimal Supabase config for Edge Functions in this repo.
-# Project linking / remote deploy uses the Supabase CLI (`supabase link`).
+# Supabase local + Edge Function config for System Bunny.
+# Hosted project auth/SMS providers are configured in the Dashboard;
+# see docs/auth-otp-setup.md
 
 [functions.stt-proxy]
 # Platform verifies the user JWT before the handler runs.
@@ -7,3 +8,44 @@ verify_jwt = true
 
 [functions.chat-proxy]
 verify_jwt = true
+
+# Auth Send SMS hook (BlackSMS). Auth calls this before a JWT exists.
+[functions.send-sms]
+verify_jwt = false
+
+[auth]
+enabled = true
+# Desktop app uses in-app OTP codes (not magic-link redirects).
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+otp_length = 6
+otp_expiry = 3600
+# Magic Link template includes {{ .Token }} so the desktop app can use email OTP codes.
+# Hosted projects: paste the same body under Authentication → Email Templates → Magic Link.
+
+[auth.email.template.magic_link]
+subject = "Your System Bunny sign-in code"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.sms]
+enable_signup = true
+enable_confirmations = false
+template = "Your System Bunny code is {{ .Code }}"
+max_frequency = "60s"
+
+# Local/dev: leave Twilio disabled — SMS is delivered via the Send SMS hook + BlackSMS.
+[auth.sms.twilio]
+enabled = false
+account_sid = ""
+message_service_sid = ""
+auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
+
+# Local Auth → Edge Function Send SMS hook (BlackSMS).
+# Hosted: enable the same hook in Authentication → Hooks (see docs/auth-otp-setup.md).
+[auth.hook.send_sms]
+enabled = true
+uri = "http://host.docker.internal:54321/functions/v1/send-sms"
+secrets = "env(SEND_SMS_HOOK_SECRETS)"
