@@ -182,9 +182,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }: PasswordResetInput): Promise<AuthResult> => {
     if (!supabase) return missingConfigError();
 
-    // SES recovery email can include a Reset button → Auth verify → redirect.
-    // Prefer VITE_AUTH_REDIRECT_URL. Never send tauri:// (or other non-http) origins
-    // — Auth rejects them and the UI used to show a useless generic error.
+    // Recovery mail is code-only (enter in-app). Prefer VITE_AUTH_REDIRECT_URL /
+    // https project URL. Never send tauri:// origins — Auth rejects them.
     const redirectTo = resolvePasswordResetRedirect();
 
     const { error } = await supabase.auth.resetPasswordForEmail(

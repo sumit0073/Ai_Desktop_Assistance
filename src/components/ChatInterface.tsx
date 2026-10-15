@@ -68,12 +68,6 @@ function screenshotDataUrl(base64: string): string {
   return `data:${mime};base64,${base64}`;
 }
 
-function speakerLabel(speaker: Speaker): string {
-  if (speaker === "them") return "Them";
-  if (speaker === "me") return "You";
-  return "AI";
-}
-
 function toHistoryEntry(m: ChatMessage) {
   if (m.speaker === "assistant") {
     return { role: "assistant" as const, content: m.content };

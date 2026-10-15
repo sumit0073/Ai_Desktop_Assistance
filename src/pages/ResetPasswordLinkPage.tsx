@@ -7,8 +7,8 @@ type Props = {
 };
 
 /**
- * Opened from the SES "Reset password" button after Auth verify redirect.
- * Expects ?code=… (PKCE) or #access_token=…&type=recovery in the URL.
+ * Opened from an Auth recovery redirect (?code=… or #access_token=…&type=recovery).
+ * Normal desktop reset uses the in-app code on Forgot password instead.
  */
 export function ResetPasswordLinkPage({ onDone }: Props) {
   const [ready, setReady] = useState(false);
@@ -19,7 +19,8 @@ export function ResetPasswordLinkPage({ onDone }: Props) {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!supabase) {
+    const client = supabase;
+    if (!client) {
       setError("Supabase is not configured.");
       setNotice(null);
       return;
@@ -37,16 +38,16 @@ export function ResetPasswordLinkPage({ onDone }: Props) {
 
         if (code) {
           const { error: exchangeError } =
-            await supabase.auth.exchangeCodeForSession(code);
+            await client.auth.exchangeCodeForSession(code);
           if (exchangeError) throw exchangeError;
         } else if (accessToken && refreshToken) {
-          const { error: sessionError } = await supabase.auth.setSession({
+          const { error: sessionError } = await client.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
           });
           if (sessionError) throw sessionError;
         } else {
-          const { data } = await supabase.auth.getSession();
+          const { data } = await client.auth.getSession();
           if (!data.session) {
             throw new Error(
               "This reset link is invalid or expired. Request a new one from the app.",
