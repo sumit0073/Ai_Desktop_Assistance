@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { publishShortcut, subscribeShortcut } from "../lib/shortcutBus";
 
@@ -6,6 +6,7 @@ export type ShortcutAction =
   | "screenshot-analyze"
   | "screenshot-error"
   | "analyze-chat"
+  | "toggle-record"
   | "scroll-chat-up"
   | "scroll-chat-down";
 
@@ -18,6 +19,7 @@ type Handlers = {
   onScreenshotAnalyze?: (imageBase64: string) => void;
   onScreenshotError?: () => void;
   onAnalyzeChat?: () => void;
+  onToggleRecord?: () => void;
   onScrollChatUp?: () => void;
   onScrollChatDown?: () => void;
 };
@@ -48,9 +50,7 @@ export function useShortcutBridge() {
 
 /** Chat (or other views) subscribe to shortcut actions. */
 export function useGlobalShortcuts(handlers: Handlers) {
-  const handlersRef = {
-    current: handlers,
-  };
+  const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
 
   useEffect(() => {
@@ -62,6 +62,8 @@ export function useGlobalShortcuts(handlers: Handlers) {
         handlersRef.current.onScreenshotError?.();
       } else if (action === "analyze-chat") {
         handlersRef.current.onAnalyzeChat?.();
+      } else if (action === "toggle-record") {
+        handlersRef.current.onToggleRecord?.();
       } else if (action === "scroll-chat-up") {
         handlersRef.current.onScrollChatUp?.();
       } else if (action === "scroll-chat-down") {

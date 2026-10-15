@@ -55,7 +55,7 @@ If `cargo` fails with `linker link.exe not found`, install [Visual Studio Build 
 - `src/pages/SignupPage.tsx` — name, email, phone, password + strength meter  
 - Sessions are persisted with PKCE; app usage rows go to `public.sessions`  
 - Put only the **anon** key in `.env` (never `service_role`)  
-- OTP provider setup: [`docs/auth-otp-setup.md`](docs/auth-otp-setup.md)
+- Auth emails via **Send Email hook → Amazon SES** (not Supabase mailer); SMS via BlackSMS — [`docs/auth-otp-setup.md`](docs/auth-otp-setup.md)
 
 ### Global shortcuts (Tauri)
 
@@ -65,7 +65,8 @@ Registered with `tauri-plugin-global-shortcut` (works while other apps are focus
 | --- | --- |
 | `Ctrl/⌘ + Shift + A` | Toggle overlay hide/show (global — no click needed) |
 | `Ctrl/⌘ + H` | Capture the desktop (any app), then send to AI analysis |
-| `Ctrl/⌘ + G` | Send the chat question to AI; if empty, clear/reset the view |
+| `Ctrl/⌘ + G` | Toggle Record (mic + meeting audio) — same as the Record button |
+| `Ctrl/⌘ + Enter` | Ask AI about the conversation (global — works while another app is focused) |
 | `Shift + ↑/↓` | Scroll chat (global) |
 | `Ctrl/⌘ + arrows` | Nudge the overlay window (global) |
 
@@ -100,7 +101,8 @@ installers — not an Android APK.
    - `VITE_CHAT_PROXY_URL` (e.g. `https://<ref>.supabase.co/functions/v1/chat-proxy`)
 2. Optional **Variables**: `VITE_GROQ_MODEL`, `VITE_GROQ_VISION_MODEL`
 3. Open [Actions → Build Desktop Installers](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-desktop.yml)
-4. **Run workflow** → wait for Windows + macOS jobs
+4. **Run workflow** (optional note field) → wait for Windows + macOS jobs  
+   Publishes GitHub Release tag `app-v*` from `src-tauri/tauri.conf.json` version (current: **0.1.6**)
 5. Download from:
    - **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
    - or the workflow run **Artifacts** (`SystemBunny-Windows-x64`, `SystemBunny-macOS-*`)

@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type FormEvent,
-  type KeyboardEvent,
 } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useWorkSession } from "../context/WorkSessionContext";
@@ -15,7 +14,10 @@ import { useMeetingCapture } from "../hooks/useMeetingCapture";
 import { usePinnedChatScroll } from "../hooks/usePinnedChatScroll";
 import { analyzeWithAi, hasMermaidBlock, type ArchitectureDetail } from "../lib/ai";
 import { CHAT_SCROLL_STEP_PX } from "../lib/chatKeyboard";
-import { buildAskAboutConversationPrompt } from "../lib/askAboutConversation";
+import {
+  buildAskAboutConversationPrompt,
+  formatRecentConversationForAi,
+} from "../lib/askAboutConversation";
 import { decideAskAudienceQuestion } from "../lib/askQuestionFlow";
 import {
   extractAudienceQuestions,
@@ -61,14 +63,6 @@ function speakerToLane(who: "them" | "me"): AudioLane {
   return who === "them" ? "meeting" : "microphone";
 }
 
-const STARTER: ChatMessage = {
-  id: "welcome",
-  role: "assistant",
-  speaker: "assistant",
-  content:
-    "Tap Record to start native capture. Your microphone is transcribed on the right; meeting/system audio (WASAPI loopback on Windows) on the left. Only detected speech is sent to speech-to-text — silence and mute do not create bubbles. Audience questions become chips you can tap for an AI answer. Ctrl/⌘+Enter asks about the whole thread.",
-};
-
 function screenshotDataUrl(base64: string): string {
   const mime = base64.startsWith("/9j/") ? "image/jpeg" : "image/png";
   return `data:${mime};base64,${base64}`;
@@ -77,7 +71,7 @@ function screenshotDataUrl(base64: string): string {
 function speakerLabel(speaker: Speaker): string {
   if (speaker === "them") return "Them";
   if (speaker === "me") return "You";
-  return "Assistant";
+  return "AI";
 }
 
 function toHistoryEntry(m: ChatMessage) {
@@ -92,17 +86,6 @@ function toHistoryEntry(m: ChatMessage) {
   };
 }
 
-function formatConversationForAi(messages: ChatMessage[]): string {
-  return messages
-    .filter((m) => m.id !== "welcome" && m.content.trim() && !m.streaming)
-    .map((m) => {
-      if (m.speaker === "assistant") return `Assistant: ${m.content}`;
-      if (m.speaker === "them") return `Them: ${m.content}`;
-      return `Me: ${m.content}`;
-    })
-    .join("\n\n");
-}
-
 const isMac =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -112,7 +95,7 @@ const modLabel = isMac ? "⌘" : "Ctrl";
 export function ChatInterface() {
   const { user } = useAuth();
   const { stopSession } = useWorkSession();
-  const [messages, setMessages] = useState<ChatMessage[]>([STARTER]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(
     null,
@@ -203,7 +186,7 @@ export function ChatInterface() {
   }, [messages]);
 
   const resetView = () => {
-    setMessages([STARTER]);
+    setMessages([]);
     setInput("");
     setPendingScreenshot(null);
     setSending(false);
@@ -334,26 +317,35 @@ export function ChatInterface() {
       architectureDetail?: ArchitectureDetail;
       /** When set, do not also append a duplicate user bubble for the prompt. */
       skipUserBubble?: boolean;
+      /** Ctrl+Enter Ask AI: left bubble shows Asking AI…; prompt stays hidden. */
+      askQuiet?: boolean;
     },
   ) => {
     if (sendingRef.current) return;
 
     const trimmed = prompt.trim();
     const hasScreenshot = Boolean(imageBase64);
+    const askQuiet = Boolean(options?.askQuiet);
 
     if (!trimmed && !hasScreenshot && !options?.forceArchitecture) {
       resetView();
       return;
     }
 
-    const history = messagesRef.current
-      .filter((m) => m.id !== "welcome")
-      .map(toHistoryEntry);
+    const history = askQuiet
+      ? []
+      : messagesRef.current
+          .filter((m) => m.id !== "welcome")
+          .map(toHistoryEntry);
 
     const assistantId = crypto.randomUUID();
     setMessages((prev) => {
       const next = [...prev];
-      if (!options?.skipUserBubble && (trimmed || hasScreenshot)) {
+      if (
+        !askQuiet &&
+        !options?.skipUserBubble &&
+        (trimmed || hasScreenshot)
+      ) {
         next.push({
           id: crypto.randomUUID(),
           role: "user",
@@ -366,7 +358,7 @@ export function ChatInterface() {
         id: assistantId,
         role: "assistant",
         speaker: "assistant",
-        content: "",
+        content: askQuiet ? "Asking AI…" : "",
         streaming: true,
       });
       return next;
@@ -505,31 +497,18 @@ export function ChatInterface() {
 
   const askAboutConversation = (extraPrompt?: string) => {
     if (sendingRef.current) return;
-    const transcript = formatConversationForAi(messagesRef.current);
+    // Only the last few Them/You turns go to the model — not shown as a chat dump.
+    const transcript = formatRecentConversationForAi(messagesRef.current);
     const note = extraPrompt?.trim();
     if (!transcript && !note && !pendingRef.current) {
       resetView();
       return;
     }
     const prompt = buildAskAboutConversationPrompt({ note, transcript });
-    // Show the typed question as the bubble; keep the full prompt (with
-    // transcript context) for the model only.
-    if (note) {
-      const askBubble: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "user",
-        speaker: "me",
-        content: note,
-      };
-      setMessages((prev) => {
-        const next = [...prev, askBubble];
-        messagesRef.current = next;
-        return next;
-      });
-      void runAnalysis(prompt, pendingRef.current, { skipUserBubble: true });
-      return;
-    }
-    void runAnalysis(prompt, pendingRef.current);
+    void runAnalysis(prompt, pendingRef.current, {
+      skipUserBubble: true,
+      askQuiet: true,
+    });
   };
 
   const expandArchitecture = (mode: "full" | "subsystem") => {
@@ -812,8 +791,14 @@ export function ChatInterface() {
       ]);
     },
     onAnalyzeChat: () => {
-      // Ctrl/⌘+G — ask AI using the full conversation (+ composer text).
+      // Ctrl/⌘+Enter — ask AI about the conversation (+ composer text).
       askAboutConversation(inputRef.current);
+    },
+    onToggleRecord: () => {
+      // Ctrl/⌘+G — same as Record: mic (You) + meeting audio (Audience).
+      if (voiceListening || voiceBusy) return;
+      if (sending && !listening) return;
+      toggleMic();
     },
     onScrollChatUp: () => {
       listRef.current?.scrollBy({
@@ -834,17 +819,6 @@ export function ChatInterface() {
     // Enter / Send: optional typed note on your side (right).
     if (!input.trim() && !pendingScreenshot) return;
     appendSpeakerMessage(input, "me", pendingScreenshot);
-  };
-
-  const onComposerKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter") return;
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      // Ctrl/⌘+Enter: send the full conversation to the AI.
-      askAboutConversation(inputRef.current);
-      return;
-    }
-    // Plain Enter is handled by form submit → add bubble.
   };
 
   return (
@@ -872,27 +846,14 @@ export function ChatInterface() {
           </div>
         </header>
 
-        <div className="shortcut-bar" data-tauri-drag-region>
-          <span>
-            <kbd>{modLabel}</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> hide/show
-          </span>
-          <span>
-            <kbd>{modLabel}</kbd>+<kbd>H</kbd> capture
-          </span>
-          <span>
-            <kbd>{modLabel}</kbd>+<kbd>Enter</kbd> ask AI
-          </span>
-          <span>
-            <kbd>{modLabel}</kbd>+<kbd>G</kbd> ask AI
-          </span>
-          <span>
-            <kbd>Enter</kbd> add note
-          </span>
-          <span>Record = mic (You) + meeting audio (Audience)</span>
-        </div>
-
         <div className="chat-messages-shell">
           <div className="chat-messages chat-messages--thread" ref={listRef}>
+            {messages.length === 0 && !pendingScreenshot && (
+              <p className="chat-welcome" role="status">
+                Session ready. Capture what’s said, jot notes as you go, and ask
+                AI when you need a clear take.
+              </p>
+            )}
             {messages.map((message) => (
               <article
                 key={message.id}
@@ -903,7 +864,7 @@ export function ChatInterface() {
                     ? "Audience (speaker)"
                     : message.speaker === "me"
                       ? "You (mic)"
-                      : speakerLabel(message.speaker)}
+                      : "AI"}
                 </span>
                 {message.imageBase64 && (
                   <img
@@ -1151,8 +1112,8 @@ export function ChatInterface() {
             disabled={(sending && !listening) || voiceListening || voiceBusy}
             title={
               listening
-                ? "Stop meeting recording"
-                : "Record mic (You) + meeting/system audio (Audience)"
+                ? `Stop meeting recording (${modLabel}+G)`
+                : `Record mic (You) + meeting/system audio (Audience) · ${modLabel}+G`
             }
             aria-label={
               listening ? "Stop meeting recording" : "Start meeting recording"
@@ -1167,7 +1128,6 @@ export function ChatInterface() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onComposerKeyDown}
               placeholder={
                 voiceListening
                   ? "Listening… speak, then tap the mic to finish"

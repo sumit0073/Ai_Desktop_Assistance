@@ -112,8 +112,26 @@ export function mapAuthError(message: string | undefined): string {
   if (lower.includes("phone") && lower.includes("provider")) {
     return "SMS sign-in isn’t configured yet. Enable Phone auth and an SMS provider in the Supabase Dashboard.";
   }
+  if (
+    lower.includes("over_email_send_rate_limit") ||
+    lower.includes("email rate limit") ||
+    (lower.includes("email") && lower.includes("rate limit"))
+  ) {
+    return "Email send limit reached. Password sign-in still works — try again shortly.";
+  }
+  // Auth OTP / recovery cooldown: "For security purposes, you can only request this after N seconds."
+  if (
+    lower.includes("for security purposes") ||
+    lower.includes("only request this after") ||
+    lower.includes("only request this")
+  ) {
+    const wait = message.match(/after\s+(\d+)\s+seconds?/i)?.[1];
+    return wait
+      ? `Please wait ${wait} seconds before requesting another reset code.`
+      : "Please wait a moment before requesting another reset code.";
+  }
   if (lower.includes("rate limit") || lower.includes("too many")) {
-    return "Too many attempts. Wait a moment and try again.";
+    return "Too many attempts. Try again shortly. Password sign-in still works.";
   }
   if (lower.includes("network") || lower.includes("fetch")) {
     return "Network error. Check your connection and try again.";
@@ -121,9 +139,25 @@ export function mapAuthError(message: string | undefined): string {
   if (
     lower.includes("redirect") ||
     lower.includes("redirect_uri") ||
-    lower.includes("not allowed")
+    lower.includes("not allowed") ||
+    lower.includes("invalid redirect")
   ) {
-    return "Password reset redirect isn’t configured in Supabase. Add your redirect URL under Authentication → URL Configuration.";
+    return "Password reset redirect isn’t allowed. Set VITE_AUTH_REDIRECT_URL to an https URL listed under Authentication → URL Configuration.";
+  }
+  if (
+    lower.includes("hook") ||
+    lower.includes("error sending") ||
+    lower.includes("failed to reach") ||
+    lower.includes("confirmation email") ||
+    lower.includes("recovery email")
+  ) {
+    return "Could not send the reset email (SES hook). Try again, or check Authentication → Hooks → Send Email.";
+  }
+
+  // Surface a short Auth message instead of a useless generic (still no stack traces).
+  const trimmed = message.trim();
+  if (trimmed.length > 0 && trimmed.length <= 160) {
+    return trimmed;
   }
 
   return "Unable to complete authentication. Please try again.";

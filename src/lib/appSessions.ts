@@ -2,6 +2,34 @@ import { supabase } from "./supabase";
 
 const ACTIVE_SESSION_KEY = "seecog-app-session-id";
 
+export type AppSessionRow = {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export async function listEndedAppSessions(
+  userId: string,
+  limit = 40,
+): Promise<AppSessionRow[]> {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("id, started_at, ended_at")
+    .eq("user_id", userId)
+    .not("ended_at", "is", null)
+    .order("started_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.warn("Failed to list app sessions:", error.message);
+    return [];
+  }
+
+  return (data ?? []) as AppSessionRow[];
+}
+
 export async function startAppSession(userId: string): Promise<void> {
   if (!supabase) return;
 

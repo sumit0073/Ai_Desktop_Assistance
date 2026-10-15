@@ -24,7 +24,7 @@ function App() {
     });
   }, []);
 
-  // Logged in but idle: auto-start session when a capture/ask shortcut fires.
+  // Logged in but idle: auto-start session when a capture/ask/record shortcut fires.
   useEffect(() => {
     if (!user || active) return;
 
@@ -34,7 +34,8 @@ function App() {
     listen<ShortcutEvent>("seecog://shortcut", (event) => {
       if (
         event.payload.action === "screenshot-analyze" ||
-        event.payload.action === "analyze-chat"
+        event.payload.action === "analyze-chat" ||
+        event.payload.action === "toggle-record"
       ) {
         void startSession();
       }

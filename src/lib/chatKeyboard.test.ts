@@ -173,6 +173,21 @@ describe("clampPhysicalWindowPosition", () => {
     expect(clamped.y).toBe(100);
   });
 
+  it("can travel onto an adjacent monitor instead of sticking to the first", () => {
+    const right = { x: 1920, y: 0, width: 1920, height: 1080 };
+    // Sliding past the right edge of the primary — nearest clamp is on `right`.
+    const clamped = clampPhysicalWindowPosition(
+      1800,
+      100,
+      800,
+      600,
+      [monitor, right],
+      64,
+    );
+    expect(clamped.x).toBeGreaterThanOrEqual(1920 - 800 + 64);
+    expect(clamped.y).toBe(100);
+  });
+
   it("applies logical step scaling when converting to physical deltas", () => {
     const scaleFactor = 1.5;
     const dxPhysical = Math.round(WINDOW_NUDGE_STEP_LOGICAL * scaleFactor);

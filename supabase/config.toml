@@ -13,22 +13,42 @@ verify_jwt = true
 [functions.send-sms]
 verify_jwt = false
 
+# Auth Send Email hook (Amazon SES SMTP). Replaces Supabase built-in mailer.
+[functions.send-email]
+verify_jwt = false
+
 [auth]
 enabled = true
 # Desktop app uses in-app OTP codes (not magic-link redirects).
 enable_signup = true
 
+# Auth always has a numeric hourly email-attempt cap (cannot be fully deleted on hosted).
+# Set extremely high so it is effectively off; SES still delivers via send-email hook.
+[auth.rate_limit]
+email_sent = 1000000
+# Hosted: also raise via scripts/raise-auth-token-limits.mjs (OTP / verify caps).
+# otp = 1000000
+# verify = 1000000
+
 [auth.email]
 enable_signup = true
-enable_confirmations = false
+# Welcome / confirm emails are delivered by send-email → Amazon SES (not Supabase mail).
+enable_confirmations = true
 otp_length = 6
 otp_expiry = 3600
-# Magic Link template includes {{ .Token }} so the desktop app can use email OTP codes.
-# Hosted projects: paste the same body under Authentication → Email Templates → Magic Link.
+# Templates unused when Send Email hook is on — Edge Function builds bodies (MiniTM-style SES).
+
+# NEVER enable Auth SMTP — Send Email hook replaces Supabase’s mailer entirely.
+[auth.email.smtp]
+enabled = false
 
 [auth.email.template.magic_link]
 subject = "Your System Bunny sign-in code"
 content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.recovery]
+subject = "Your System Bunny password reset code"
+content_path = "./supabase/templates/recovery.html"
 
 [auth.sms]
 enable_signup = true
@@ -43,9 +63,15 @@ account_sid = ""
 message_service_sid = ""
 auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 
-# Local Auth → Edge Function Send SMS hook (BlackSMS).
-# Hosted: enable the same hook in Authentication → Hooks (see docs/auth-otp-setup.md).
-[auth.hook.send_sms]
+# Hosted Auth hooks (production function URLs). This is what turns OFF Supabase’s
+# built-in mailer for email — send-email delivers via Amazon SES SMTP instead.
+# Local `supabase start`: temporarily point these at
+# http://host.docker.internal:54321/functions/v1/...
+# send_sms kept on remote as-is (secrets already configured). Declaring it here
+# would require SEND_SMS_HOOK_SECRETS in env on every config push.
+# [auth.hook.send_sms] — managed on Dashboard / prior push
+
+[auth.hook.send_email]
 enabled = true
-uri = "http://host.docker.internal:54321/functions/v1/send-sms"
-secrets = "env(SEND_SMS_HOOK_SECRETS)"
+uri = "https://kjuywrbscqihdyfchrhr.supabase.co/functions/v1/send-email"
+secrets = "env(SEND_EMAIL_HOOK_SECRETS)"

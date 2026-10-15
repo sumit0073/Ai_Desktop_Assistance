@@ -159,7 +159,10 @@ export function isNearBottom(
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
 }
 
-/** Clamp a physical window position so a useful portion stays on some monitor. */
+/**
+ * Clamp so a useful portion stays on-screen, allowing travel onto adjacent
+ * monitors (pick the display whose clamp is closest to the proposed point).
+ */
 export function clampPhysicalWindowPosition(
   x: number,
   y: number,
@@ -172,49 +175,22 @@ export function clampPhysicalWindowPosition(
     return { x, y };
   }
 
-  const centerX = x + winWidth / 2;
-  const centerY = y + winHeight / 2;
+  let best = { x, y };
+  let bestDist = Number.POSITIVE_INFINITY;
 
-  let area =
-    workAreas.find(
-      (a) =>
-        centerX >= a.x &&
-        centerX < a.x + a.width &&
-        centerY >= a.y &&
-        centerY < a.y + a.height,
-    ) ?? null;
-
-  if (!area) {
-    // Pick the work area with the largest overlap with the proposed window.
-    let bestOverlap = -1;
-    for (const candidate of workAreas) {
-      const overlapX = Math.max(
-        0,
-        Math.min(x + winWidth, candidate.x + candidate.width) -
-          Math.max(x, candidate.x),
-      );
-      const overlapY = Math.max(
-        0,
-        Math.min(y + winHeight, candidate.y + candidate.height) -
-          Math.max(y, candidate.y),
-      );
-      const overlap = overlapX * overlapY;
-      if (overlap > bestOverlap) {
-        bestOverlap = overlap;
-        area = candidate;
-      }
+  for (const area of workAreas) {
+    const minX = area.x - winWidth + minVisible;
+    const maxX = area.x + area.width - minVisible;
+    const minY = area.y - winHeight + minVisible;
+    const maxY = area.y + area.height - minVisible;
+    const cx = Math.min(Math.max(x, minX), maxX);
+    const cy = Math.min(Math.max(y, minY), maxY);
+    const dist = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { x: cx, y: cy };
     }
   }
 
-  area ??= workAreas[0]!;
-
-  const minX = area.x - winWidth + minVisible;
-  const maxX = area.x + area.width - minVisible;
-  const minY = area.y - winHeight + minVisible;
-  const maxY = area.y + area.height - minVisible;
-
-  return {
-    x: Math.min(Math.max(x, minX), maxX),
-    y: Math.min(Math.max(y, minY), maxY),
-  };
+  return best;
 }

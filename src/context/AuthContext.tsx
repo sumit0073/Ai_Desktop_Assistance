@@ -26,6 +26,10 @@ export type PasswordResetInput = {
   email: string;
 };
 
+export type CompletePasswordResetInput =
+  | { channel: "email"; email: string; token: string; password: string }
+  | { channel: "sms"; phone: string; token: string; password: string };
+
 export type OtpChannel = "email" | "sms";
 
 export type SendOtpInput =
@@ -48,6 +52,7 @@ type AuthContextValue = {
   signIn: (input: SignInInput) => Promise<AuthResult>;
   signUp: (input: SignUpInput) => Promise<AuthResult>;
   requestPasswordReset: (input: PasswordResetInput) => Promise<AuthResult>;
+  completePasswordReset: (input: CompletePasswordResetInput) => Promise<AuthResult>;
   sendOtp: (input: SendOtpInput) => Promise<AuthResult>;
   verifyOtp: (input: VerifyOtpInput) => Promise<AuthResult>;
   signOut: () => Promise<void>;
@@ -59,6 +64,26 @@ function missingConfigError(): AuthResult {
   return {
     error: "Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file.",
   };
+}
+
+/** http(s) only — Tauri custom schemes break resetPasswordForEmail. */
+function resolvePasswordResetRedirect(): string | undefined {
+  const fromEnv = import.meta.env.VITE_AUTH_REDIRECT_URL?.trim();
+  if (fromEnv) return fromEnv;
+
+  // Prefer the Supabase project URL (always allow-listed). Local / tauri origins
+  // are optional for the in-app OTP path and often fail URL Configuration checks.
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
+  if (supabaseUrl && /^https?:\/\//i.test(supabaseUrl)) {
+    return `${supabaseUrl.replace(/\/$/, "")}/`;
+  }
+
+  if (typeof window === "undefined") return undefined;
+  const origin = window.location.origin;
+  if (/^https?:\/\//i.test(origin) && !/tauri\.localhost/i.test(origin)) {
+    return `${origin.replace(/\/$/, "")}/`;
+  }
+  return undefined;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -157,16 +182,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }: PasswordResetInput): Promise<AuthResult> => {
     if (!supabase) return missingConfigError();
 
-    const redirectTo = import.meta.env.VITE_AUTH_REDIRECT_URL?.trim() || undefined;
+    // SES recovery email can include a Reset button → Auth verify → redirect.
+    // Prefer VITE_AUTH_REDIRECT_URL. Never send tauri:// (or other non-http) origins
+    // — Auth rejects them and the UI used to show a useless generic error.
+    const redirectTo = resolvePasswordResetRedirect();
 
     const { error } = await supabase.auth.resetPasswordForEmail(
       normalizeEmail(email),
-      {
-        ...(redirectTo ? { redirectTo } : {}),
-      },
+      redirectTo ? { redirectTo } : undefined,
     );
 
-    return { error: error ? mapAuthError(error.message) : null };
+    if (error) {
+      console.error("resetPasswordForEmail failed:", error.message);
+      return { error: mapAuthError(error.message) };
+    }
+    return { error: null };
+  };
+
+  const completePasswordReset = async (
+    input: CompletePasswordResetInput,
+  ): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+
+    const token = input.token.trim();
+
+    // SMS path uses BlackSMS (no SMTP). Email path needs Recovery template + SMTP/quota.
+    const { error: verifyError } =
+      input.channel === "email"
+        ? await supabase.auth.verifyOtp({
+            email: normalizeEmail(input.email),
+            token,
+            type: "recovery",
+          })
+        : await supabase.auth.verifyOtp({
+            phone: normalizePhone(input.phone),
+            token,
+            type: "sms",
+          });
+
+    if (verifyError) {
+      return { error: mapAuthError(verifyError.message) };
+    }
+
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: input.password,
+    });
+    if (updateError) {
+      return { error: mapAuthError(updateError.message) };
+    }
+
+    return { error: null };
   };
 
   const sendOtp = async (input: SendOtpInput): Promise<AuthResult> => {
@@ -234,6 +299,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signIn,
         signUp,
         requestPasswordReset,
+        completePasswordReset,
         sendOtp,
         verifyOtp,
         signOut,

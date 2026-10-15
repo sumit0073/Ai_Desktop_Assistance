@@ -2,16 +2,22 @@ import { useState } from "react";
 import { ForgotPasswordPage } from "../pages/ForgotPasswordPage";
 import { LoginPage } from "../pages/LoginPage";
 import { OtpLoginPage } from "../pages/OtpLoginPage";
+import {
+  isPasswordResetLinkLocation,
+  ResetPasswordLinkPage,
+} from "../pages/ResetPasswordLinkPage";
 import { SignupPage } from "../pages/SignupPage";
 import { AuthTabs } from "./AuthTabs";
 import { ThemeToggle } from "./ThemeToggle";
 import { WindowControls } from "./WindowControls";
 import bunnyLogo from "../assets/system-bunny-logo.png";
 
-type AuthView = "login" | "signup" | "forgot" | "otp";
+type AuthView = "login" | "signup" | "forgot" | "otp" | "reset-link";
 
 export function LandingPage() {
-  const [view, setView] = useState<AuthView>("login");
+  const [view, setView] = useState<AuthView>(() =>
+    isPasswordResetLinkLocation() ? "reset-link" : "login",
+  );
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const switchView = (next: AuthView) => {
@@ -23,7 +29,8 @@ export function LandingPage() {
   };
 
   const backToLogin = (notice?: string | null) => {
-    setAuthNotice(notice ?? null);
+    // Callers sometimes wire this to onClick — ignore non-string args (MouseEvent).
+    setAuthNotice(typeof notice === "string" ? notice : null);
     setView("login");
   };
 
@@ -52,11 +59,19 @@ export function LandingPage() {
             </p>
           )}
           {view === "forgot" && (
-            <p className="tagline">Reset your password and get back to work.</p>
+            <p className="tagline">
+              Reset your password here — this is not sign-in. We’ll email a code
+              from System Bunny.
+            </p>
           )}
           {view === "otp" && (
             <p className="tagline">
               Sign in with a one-time code sent to your email or phone.
+            </p>
+          )}
+          {view === "reset-link" && (
+            <p className="tagline">
+              Choose a new password. This page opened from your reset email.
             </p>
           )}
         </section>
@@ -64,7 +79,7 @@ export function LandingPage() {
         <div className="auth-panel">
           {showTabs && (
             <AuthTabs
-              active={view}
+              active={view === "signup" ? "signup" : "login"}
               onChange={(next) => switchView(next)}
             />
           )}
@@ -84,10 +99,17 @@ export function LandingPage() {
               />
             )}
             {view === "forgot" && (
-              <ForgotPasswordPage onBackToLogin={backToLogin} />
+              <ForgotPasswordPage onBackToLogin={() => backToLogin()} />
             )}
             {view === "otp" && (
               <OtpLoginPage onBackToLogin={() => backToLogin()} />
+            )}
+            {view === "reset-link" && (
+              <ResetPasswordLinkPage
+                onDone={() =>
+                  backToLogin("Password updated. Sign in with your new password.")
+                }
+              />
             )}
           </div>
         </div>

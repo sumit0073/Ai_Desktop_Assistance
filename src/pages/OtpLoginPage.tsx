@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { CountryCodePicker } from "../components/CountryCodePicker";
 import { useAuth, type OtpChannel } from "../context/AuthContext";
 import {
@@ -20,9 +20,13 @@ type Props = {
 
 type Step = "request" | "verify";
 
+/** Client cooldown so rapid Resend clicks do not burn Supabase's tiny email quota. */
+const RESEND_COOLDOWN_SEC = 60;
+
 export function OtpLoginPage({ onBackToLogin }: Props) {
   const { sendOtp, verifyOtp, configured } = useAuth();
-  const [channel, setChannel] = useState<OtpChannel>("email");
+  // Prefer SMS until custom SMTP is configured (built-in email ≈ 2/hour).
+  const [channel, setChannel] = useState<OtpChannel>("sms");
   const [step, setStep] = useState<Step>("request");
   const [email, setEmail] = useState("");
   const [country, setCountry] = useState<PhoneCountrySelection>(getDefaultSelection);
@@ -31,6 +35,13 @@ export function OtpLoginPage({ onBackToLogin }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const id = window.setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => window.clearTimeout(id);
+  }, [resendIn]);
 
   const phoneStatus = useMemo(
     () => getPhoneFeasibility(nationalNumber, country),
@@ -81,10 +92,12 @@ export function OtpLoginPage({ onBackToLogin }: Props) {
 
     if (result.error) {
       setError(result.error);
+      setResendIn(RESEND_COOLDOWN_SEC);
       return;
     }
 
     setStep("verify");
+    setResendIn(RESEND_COOLDOWN_SEC);
     setNotice(
       channel === "email"
         ? "We sent a 6-digit code to your email."
@@ -115,6 +128,7 @@ export function OtpLoginPage({ onBackToLogin }: Props) {
   };
 
   const onResend = async () => {
+    if (resendIn > 0) return;
     setError(null);
     setSubmitting(true);
     const result =
@@ -122,6 +136,7 @@ export function OtpLoginPage({ onBackToLogin }: Props) {
         ? await sendOtp({ channel: "email", email })
         : await sendOtp({ channel: "sms", phone: phoneE164 });
     setSubmitting(false);
+    setResendIn(RESEND_COOLDOWN_SEC);
 
     if (result.error) {
       setError(result.error);
@@ -146,20 +161,20 @@ export function OtpLoginPage({ onBackToLogin }: Props) {
         <button
           type="button"
           role="tab"
-          aria-selected={channel === "email"}
-          className={`otp-channel__btn ${channel === "email" ? "is-active" : ""}`}
-          onClick={() => switchChannel("email")}
-        >
-          Email
-        </button>
-        <button
-          type="button"
-          role="tab"
           aria-selected={channel === "sms"}
           className={`otp-channel__btn ${channel === "sms" ? "is-active" : ""}`}
           onClick={() => switchChannel("sms")}
         >
           SMS
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={channel === "email"}
+          className={`otp-channel__btn ${channel === "email" ? "is-active" : ""}`}
+          onClick={() => switchChannel("email")}
+        >
+          Email
         </button>
       </div>
 
@@ -262,10 +277,10 @@ export function OtpLoginPage({ onBackToLogin }: Props) {
         <button
           type="button"
           className="btn btn-ghost"
-          disabled={submitting}
+          disabled={submitting || resendIn > 0}
           onClick={() => void onResend()}
         >
-          Resend code
+          {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
         </button>
       )}
 

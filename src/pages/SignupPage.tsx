@@ -85,7 +85,7 @@ export function SignupPage({ onSwitchToLogin }: Props) {
     setConfirmPassword("");
     setSubmitting(false);
     onSwitchToLogin(
-      "Account created. Sign in with your password, or use email/SMS OTP.",
+      "Account created. Check your email for a welcome/confirm message (Amazon SES), then sign in.",
     );
   };
 

@@ -1,3 +1,35 @@
+/** How many Them/You turns to send as Ask AI context (not the full thread). */
+export const ASK_AI_CONTEXT_TURNS = 5;
+
+export type AskConversationTurn = {
+  id?: string;
+  speaker: "them" | "me" | "assistant";
+  content: string;
+  streaming?: boolean;
+};
+
+/** Last N audience/you lines only — used as hidden model context. */
+export function formatRecentConversationForAi(
+  messages: AskConversationTurn[],
+  limit = ASK_AI_CONTEXT_TURNS,
+): string {
+  return messages
+    .filter(
+      (m) =>
+        m.id !== "welcome" &&
+        Boolean(m.content.trim()) &&
+        !m.streaming &&
+        (m.speaker === "them" || m.speaker === "me"),
+    )
+    .slice(-limit)
+    .map((m) =>
+      m.speaker === "them"
+        ? `Them: ${m.content.trim()}`
+        : `Me: ${m.content.trim()}`,
+    )
+    .join("\n\n");
+}
+
 /**
  * Build the Ask AI prompt for the composer / Ctrl+Enter path.
  * An explicit typed (or composer) note always wins over transcript STT noise.

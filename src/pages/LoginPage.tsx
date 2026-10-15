@@ -92,7 +92,7 @@ export function LoginPage({
           Connect Supabase in <code>.env</code> to enable real auth.
         </p>
       )}
-      {notice && (
+      {typeof notice === "string" && notice.length > 0 && (
         <p className="auth-notice" role="status">
           {notice}
         </p>

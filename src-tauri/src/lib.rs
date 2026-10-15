@@ -1,7 +1,8 @@
 mod audio;
 
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -21,6 +22,23 @@ use audio::{
 static OVERLAY_USER_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 const WINDOW_NUDGE_LOGICAL: i32 = 30;
+const MIN_VISIBLE_PHYSICAL_PX: i32 = 64;
+/// Wait after the first step before continuous repeat (keyboard-style).
+const HOLD_REPEAT_DELAY_MS: u64 = 420;
+/// Interval between continuous steps while the chord is held.
+const HOLD_TICK_MS: u64 = 140;
+
+const HOLD_NONE: u8 = 0;
+const HOLD_SCROLL_UP: u8 = 1;
+const HOLD_SCROLL_DOWN: u8 = 2;
+const HOLD_NUDGE_UP: u8 = 3;
+const HOLD_NUDGE_DOWN: u8 = 4;
+const HOLD_NUDGE_LEFT: u8 = 5;
+const HOLD_NUDGE_RIGHT: u8 = 6;
+
+/// Active hold-to-repeat action for Shift/Ctrl arrow chords.
+static HOLD_KIND: AtomicU8 = AtomicU8::new(HOLD_NONE);
+static HOLD_TICKER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +147,45 @@ fn strip_os_focus_chrome(window: &WebviewWindow) {
     let _ = window;
 }
 
+fn clamp_to_monitors(
+    x: i32,
+    y: i32,
+    win_w: i32,
+    win_h: i32,
+    monitors: &[tauri::Monitor],
+    min_visible: i32,
+) -> (i32, i32) {
+    if monitors.is_empty() {
+        return (x, y);
+    }
+
+    let mut best = (x, y);
+    let mut best_dist = i64::MAX;
+
+    for monitor in monitors {
+        let area = monitor.work_area();
+        let ax = area.position.x;
+        let ay = area.position.y;
+        let aw = area.size.width as i32;
+        let ah = area.size.height as i32;
+        let min_x = ax - win_w + min_visible;
+        let max_x = ax + aw - min_visible;
+        let min_y = ay - win_h + min_visible;
+        let max_y = ay + ah - min_visible;
+        let cx = x.clamp(min_x, max_x);
+        let cy = y.clamp(min_y, max_y);
+        let dx = (cx - x) as i64;
+        let dy = (cy - y) as i64;
+        let dist = dx * dx + dy * dy;
+        if dist < best_dist {
+            best_dist = dist;
+            best = (cx, cy);
+        }
+    }
+
+    best
+}
+
 fn nudge_main_window(app: &AppHandle, dx_logical: i32, dy_logical: i32) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -139,16 +196,80 @@ fn nudge_main_window(app: &AppHandle, dx_logical: i32, dy_logical: i32) -> Resul
     }
 
     let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let dx = ((dx_logical as f64) * scale).round() as i32;
     let dy = ((dy_logical as f64) * scale).round() as i32;
 
-    window
-        .set_position(PhysicalPosition::new(pos.x + dx, pos.y + dy))
-        .map_err(|e| e.to_string())?;
+    let monitors = window.available_monitors().unwrap_or_default();
+    let (nx, ny) = clamp_to_monitors(
+        pos.x + dx,
+        pos.y + dy,
+        size.width as i32,
+        size.height as i32,
+        &monitors,
+        MIN_VISIBLE_PHYSICAL_PX,
+    );
+
+    if nx != pos.x || ny != pos.y {
+        window
+            .set_position(PhysicalPosition::new(nx, ny))
+            .map_err(|e| e.to_string())?;
+    }
     let _ = window.set_always_on_top(true);
     strip_os_focus_chrome(&window);
     Ok(())
+}
+
+fn apply_hold_tick(app: &AppHandle, kind: u8) {
+    match kind {
+        HOLD_SCROLL_UP => emit_shortcut(app, "scroll-chat-up", None),
+        HOLD_SCROLL_DOWN => emit_shortcut(app, "scroll-chat-down", None),
+        HOLD_NUDGE_UP => {
+            let _ = nudge_main_window(app, 0, -WINDOW_NUDGE_LOGICAL);
+        }
+        HOLD_NUDGE_DOWN => {
+            let _ = nudge_main_window(app, 0, WINDOW_NUDGE_LOGICAL);
+        }
+        HOLD_NUDGE_LEFT => {
+            let _ = nudge_main_window(app, -WINDOW_NUDGE_LOGICAL, 0);
+        }
+        HOLD_NUDGE_RIGHT => {
+            let _ = nudge_main_window(app, WINDOW_NUDGE_LOGICAL, 0);
+        }
+        _ => {}
+    }
+}
+
+fn begin_hold(app: &AppHandle, kind: u8) {
+    HOLD_KIND.store(kind, Ordering::SeqCst);
+    // One step on press. Continuous repeat only after HOLD_REPEAT_DELAY_MS if still held.
+    apply_hold_tick(app, kind);
+
+    if HOLD_TICKER_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(HOLD_REPEAT_DELAY_MS));
+        loop {
+            let kind = HOLD_KIND.load(Ordering::SeqCst);
+            if kind == HOLD_NONE {
+                HOLD_TICKER_RUNNING.store(false, Ordering::SeqCst);
+                break;
+            }
+            apply_hold_tick(&app, kind);
+            thread::sleep(Duration::from_millis(HOLD_TICK_MS));
+        }
+    });
+}
+
+fn end_hold(kind: u8) {
+    let _ = HOLD_KIND.compare_exchange(kind, HOLD_NONE, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 /// Capture, downscale, and JPEG-compress for Groq vision (20MB request limit).
@@ -239,7 +360,60 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if event.state != ShortcutState::Pressed {
+                    let pressed = event.state == ShortcutState::Pressed;
+                    let released = event.state == ShortcutState::Released;
+
+                    // Hold-to-repeat: Shift+↑/↓ scroll, Ctrl/⌘+arrows nudge.
+                    if shortcut.matches(Modifiers::SHIFT, Code::ArrowUp) {
+                        if pressed {
+                            begin_hold(app, HOLD_SCROLL_UP);
+                        } else if released {
+                            end_hold(HOLD_SCROLL_UP);
+                        }
+                        return;
+                    }
+                    if shortcut.matches(Modifiers::SHIFT, Code::ArrowDown) {
+                        if pressed {
+                            begin_hold(app, HOLD_SCROLL_DOWN);
+                        } else if released {
+                            end_hold(HOLD_SCROLL_DOWN);
+                        }
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowUp) {
+                        if pressed {
+                            begin_hold(app, HOLD_NUDGE_UP);
+                        } else if released {
+                            end_hold(HOLD_NUDGE_UP);
+                        }
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowDown) {
+                        if pressed {
+                            begin_hold(app, HOLD_NUDGE_DOWN);
+                        } else if released {
+                            end_hold(HOLD_NUDGE_DOWN);
+                        }
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowLeft) {
+                        if pressed {
+                            begin_hold(app, HOLD_NUDGE_LEFT);
+                        } else if released {
+                            end_hold(HOLD_NUDGE_LEFT);
+                        }
+                        return;
+                    }
+                    if shortcut.matches(chord_for_handler, Code::ArrowRight) {
+                        if pressed {
+                            begin_hold(app, HOLD_NUDGE_RIGHT);
+                        } else if released {
+                            end_hold(HOLD_NUDGE_RIGHT);
+                        }
+                        return;
+                    }
+
+                    if !pressed {
                         return;
                     }
 
@@ -261,36 +435,15 @@ pub fn run() {
                         return;
                     }
 
+                    // Toggle meeting Record (mic + audience) — same as the Record button.
                     if shortcut.matches(chord_for_handler, Code::KeyG) {
+                        emit_shortcut(app, "toggle-record", None);
+                        return;
+                    }
+
+                    // Ask AI — works while another app is focused.
+                    if shortcut.matches(chord_for_handler, Code::Enter) {
                         emit_shortcut(app, "analyze-chat", None);
-                        return;
-                    }
-
-                    // Chat scroll — works even when Chrome (or another app) has focus.
-                    if shortcut.matches(Modifiers::SHIFT, Code::ArrowUp) {
-                        emit_shortcut(app, "scroll-chat-up", None);
-                        return;
-                    }
-                    if shortcut.matches(Modifiers::SHIFT, Code::ArrowDown) {
-                        emit_shortcut(app, "scroll-chat-down", None);
-                        return;
-                    }
-
-                    // Window nudge — global so the overlay can move without clicking it.
-                    if shortcut.matches(chord_for_handler, Code::ArrowUp) {
-                        let _ = nudge_main_window(app, 0, -WINDOW_NUDGE_LOGICAL);
-                        return;
-                    }
-                    if shortcut.matches(chord_for_handler, Code::ArrowDown) {
-                        let _ = nudge_main_window(app, 0, WINDOW_NUDGE_LOGICAL);
-                        return;
-                    }
-                    if shortcut.matches(chord_for_handler, Code::ArrowLeft) {
-                        let _ = nudge_main_window(app, -WINDOW_NUDGE_LOGICAL, 0);
-                        return;
-                    }
-                    if shortcut.matches(chord_for_handler, Code::ArrowRight) {
-                        let _ = nudge_main_window(app, WINDOW_NUDGE_LOGICAL, 0);
                     }
                 })
                 .build(),
@@ -339,6 +492,7 @@ pub fn run() {
                 hide_show,
                 Shortcut::new(Some(chord), Code::KeyH),
                 Shortcut::new(Some(chord), Code::KeyG),
+                Shortcut::new(Some(chord), Code::Enter),
                 Shortcut::new(Some(Modifiers::SHIFT), Code::ArrowUp),
                 Shortcut::new(Some(Modifiers::SHIFT), Code::ArrowDown),
                 Shortcut::new(Some(chord), Code::ArrowUp),
