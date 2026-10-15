@@ -1476,6 +1476,22 @@
   color: var(--muted);
 }
 
+.auth-alt-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.auth-alt-actions:has(> :only-child) {
+  grid-template-columns: 1fr;
+}
+
+.auth-alt-actions__btn {
+  width: 100%;
+  min-width: 0;
+}
+
 .auth-password-block {
   display: grid;
   gap: 4px;

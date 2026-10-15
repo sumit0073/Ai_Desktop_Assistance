@@ -10,11 +10,13 @@ import {
   useShortcutBridge,
   type ShortcutEvent,
 } from "./hooks/useGlobalShortcuts";
+import { isEmailVerified } from "./lib/emailVerification";
 import "./App.css";
 
 function App() {
   const { user, loading } = useAuth();
   const { active, startSession } = useWorkSession();
+  const emailVerified = isEmailVerified(user);
 
   useShortcutBridge();
 
@@ -26,7 +28,7 @@ function App() {
 
   // Logged in but idle: auto-start session when a capture/ask/record shortcut fires.
   useEffect(() => {
-    if (!user || active) return;
+    if (!user || !emailVerified || active) return;
 
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -50,7 +52,7 @@ function App() {
       cancelled = true;
       unlisten?.();
     };
-  }, [user, active, startSession]);
+  }, [user, emailVerified, active, startSession]);
 
   if (loading) {
     return (
@@ -63,10 +65,15 @@ function App() {
   }
 
   let body = <LandingPage />;
-  if (user && !active) body = <StartScreen />;
-  if (user && active) body = <ChatInterface />;
+  if (user && !emailVerified) {
+    body = <LandingPage forceVerifyEmail={user.email ?? ""} />;
+  } else if (user && !active) {
+    body = <StartScreen />;
+  } else if (user && active) {
+    body = <ChatInterface />;
+  }
 
-  const sessionActive = Boolean(user && active);
+  const sessionActive = Boolean(user && emailVerified && active);
 
   return (
     <div className={`app-root ${sessionActive ? "session-active" : ""}`}>

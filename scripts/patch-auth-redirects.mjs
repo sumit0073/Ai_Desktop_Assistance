@@ -76,6 +76,11 @@ const allow = [
   "https://tauri.localhost/**",
   "http://tauri.localhost",
   "http://tauri.localhost/**",
+  // Google OAuth return for installed desktop app (system browser → loopback)
+  "http://127.0.0.1:17843",
+  "http://127.0.0.1:17843/**",
+  "http://localhost:17843",
+  "http://localhost:17843/**",
 ].join(",");
 
 const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/config/auth`, {

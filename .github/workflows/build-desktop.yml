@@ -2,12 +2,14 @@
 # and publishes downloadable installers on a GitHub Release.
 #
 # Trigger: Actions → "Build Desktop Installers" → Run workflow
+#   - version: e.g. 0.1.7 (optional; leave blank to use repo version)
 # Download: repo Releases page, or the workflow run Artifacts
 #
 # Required repository secrets:
 #   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY,
 #   VITE_STT_PROXY_URL, VITE_CHAT_PROXY_URL
-# Optional repository variables:
+# Optional repository secrets / variables:
+#   VITE_GOOGLE_CLIENT_ID (Google Sign-In in release builds)
 #   VITE_GROQ_MODEL, VITE_GROQ_VISION_MODEL
 
 name: Build Desktop Installers
@@ -17,6 +19,11 @@ on:
   # Builds Windows (.exe/.msi) + macOS (.dmg) and publishes GitHub Release app-v*
   workflow_dispatch:
     inputs:
+      version:
+        description: "Release version (e.g. 0.1.7). Leave empty to use the version already in the repo."
+        required: false
+        type: string
+        default: "0.1.7"
       note:
         description: "Optional release note (shown in the run summary)"
         required: false
@@ -50,6 +57,11 @@ jobs:
           node-version: lts/*
           cache: npm
 
+      - name: Apply release version
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        shell: bash
+        run: node scripts/bump-version.mjs "${{ inputs.version }}"
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
@@ -66,6 +78,7 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_STT_PROXY_URL: ${{ secrets.VITE_STT_PROXY_URL }}
           VITE_CHAT_PROXY_URL: ${{ secrets.VITE_CHAT_PROXY_URL }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
           VITE_GROQ_MODEL: ${{ vars.VITE_GROQ_MODEL }}
           VITE_GROQ_VISION_MODEL: ${{ vars.VITE_GROQ_VISION_MODEL }}
         run: |
@@ -85,6 +98,9 @@ jobs:
             echo "VITE_CHAT_PROXY_URL=${VITE_CHAT_PROXY_URL}"
             echo "VITE_GROQ_MODEL=${VITE_GROQ_MODEL:-openai/gpt-oss-20b}"
             echo "VITE_GROQ_VISION_MODEL=${VITE_GROQ_VISION_MODEL:-qwen/qwen3.8-27b}"
+            if [ -n "${VITE_GOOGLE_CLIENT_ID:-}" ]; then
+              echo "VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}"
+            fi
           } > .env
           if grep -Eiq 'GROQ_API_KEY|ALLOW_DIRECT_GROQ' .env; then
             echo "Refusing to build: client .env must not contain Groq secrets." >&2
@@ -148,6 +164,10 @@ jobs:
           node-version: lts/*
           cache: npm
 
+      - name: Apply release version
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        run: node scripts/bump-version.mjs "${{ inputs.version }}"
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -165,6 +185,7 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_STT_PROXY_URL: ${{ secrets.VITE_STT_PROXY_URL }}
           VITE_CHAT_PROXY_URL: ${{ secrets.VITE_CHAT_PROXY_URL }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
           VITE_GROQ_MODEL: ${{ vars.VITE_GROQ_MODEL }}
           VITE_GROQ_VISION_MODEL: ${{ vars.VITE_GROQ_VISION_MODEL }}
         run: |
@@ -184,6 +205,9 @@ jobs:
             echo "VITE_CHAT_PROXY_URL=${VITE_CHAT_PROXY_URL}"
             echo "VITE_GROQ_MODEL=${VITE_GROQ_MODEL:-openai/gpt-oss-20b}"
             echo "VITE_GROQ_VISION_MODEL=${VITE_GROQ_VISION_MODEL:-qwen/qwen3.8-27b}"
+            if [ -n "${VITE_GOOGLE_CLIENT_ID:-}" ]; then
+              echo "VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}"
+            fi
           } > .env
           if grep -Eiq 'GROQ_API_KEY|ALLOW_DIRECT_GROQ' .env; then
             echo "Refusing to build: client .env must not contain Groq secrets." >&2
@@ -229,6 +253,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Apply release version
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        run: node scripts/bump-version.mjs "${{ inputs.version }}"
 
       - name: Read app version
         id: ver

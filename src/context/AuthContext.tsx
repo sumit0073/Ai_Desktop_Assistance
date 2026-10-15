@@ -7,6 +7,10 @@ import {
 } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { endAppSession } from "../lib/appSessions";
+import {
+  completeGoogleSignIn,
+  isGoogleAuthConfigured,
+} from "../lib/googleAuth";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 import { mapAuthError, normalizeEmail, normalizePhone } from "../lib/validation";
 
@@ -40,6 +44,15 @@ export type VerifyOtpInput =
   | { channel: "email"; email: string; token: string }
   | { channel: "sms"; phone: string; token: string };
 
+export type VerifySignupEmailInput = {
+  email: string;
+  token: string;
+};
+
+export type ResendSignupEmailInput = {
+  email: string;
+};
+
 export type AuthResult = {
   error: string | null;
 };
@@ -49,12 +62,16 @@ type AuthContextValue = {
   session: Session | null;
   loading: boolean;
   configured: boolean;
+  googleConfigured: boolean;
   signIn: (input: SignInInput) => Promise<AuthResult>;
+  signInWithGoogle: () => Promise<AuthResult>;
   signUp: (input: SignUpInput) => Promise<AuthResult>;
   requestPasswordReset: (input: PasswordResetInput) => Promise<AuthResult>;
   completePasswordReset: (input: CompletePasswordResetInput) => Promise<AuthResult>;
   sendOtp: (input: SendOtpInput) => Promise<AuthResult>;
   verifyOtp: (input: VerifyOtpInput) => Promise<AuthResult>;
+  verifySignupEmail: (input: VerifySignupEmailInput) => Promise<AuthResult>;
+  resendSignupEmail: (input: ResendSignupEmailInput) => Promise<AuthResult>;
   signOut: () => Promise<void>;
 };
 
@@ -133,6 +150,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return { error: error ? mapAuthError(error.message) : null };
+  };
+
+  const signInWithGoogle = async (): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+    if (!isGoogleAuthConfigured()) {
+      return {
+        error: "Add VITE_GOOGLE_CLIENT_ID to your .env file.",
+      };
+    }
+
+    try {
+      await completeGoogleSignIn(supabase);
+      return { error: null };
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Google sign-in failed.";
+      return { error: mapAuthError(message) };
+    }
   };
 
   const signUp = async ({
@@ -280,6 +315,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error ? mapAuthError(error.message) : null };
   };
 
+  const verifySignupEmail = async ({
+    email,
+    token,
+  }: VerifySignupEmailInput): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+
+    const { error } = await supabase.auth.verifyOtp({
+      email: normalizeEmail(email),
+      token: token.trim(),
+      type: "signup",
+    });
+
+    return { error: error ? mapAuthError(error.message) : null };
+  };
+
+  const resendSignupEmail = async ({
+    email,
+  }: ResendSignupEmailInput): Promise<AuthResult> => {
+    if (!supabase) return missingConfigError();
+
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email: normalizeEmail(email),
+    });
+
+    return { error: error ? mapAuthError(error.message) : null };
+  };
+
   const signOut = async () => {
     await endAppSession();
     setUser(null);
@@ -295,12 +358,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         loading,
         configured: isSupabaseConfigured,
+        googleConfigured: isGoogleAuthConfigured(),
         signIn,
+        signInWithGoogle,
         signUp,
         requestPasswordReset,
         completePasswordReset,
         sendOtp,
         verifyOtp,
+        verifySignupEmail,
+        resendSignupEmail,
         signOut,
       }}
     >

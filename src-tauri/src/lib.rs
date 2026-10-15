@@ -48,6 +48,179 @@ struct ShortcutPayload {
     image_base64: Option<String>,
 }
 
+/// Fixed loopback port for Google OAuth return (must match frontend + Supabase redirect allow-list).
+const OAUTH_LOOPBACK_PORT: u16 = 17843;
+
+fn oauth_success_html() -> &'static str {
+    r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Signed in · System Bunny</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #102433;
+      --ink-soft: #3d5566;
+      --accent: #0c6b5c;
+      --accent-ink: #f4fbf9;
+      --glow: rgba(12, 107, 92, 0.22);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+    }
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 2rem 1.25rem;
+      font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(900px 520px at 12% 8%, rgba(12, 107, 92, 0.18), transparent 55%),
+        radial-gradient(700px 480px at 88% 92%, rgba(45, 120, 160, 0.14), transparent 50%),
+        linear-gradient(165deg, #e8f4f1 0%, #f3f7f9 48%, #eef2f6 100%);
+    }
+    main {
+      width: min(26rem, 100%);
+      text-align: center;
+    }
+    .mark {
+      width: 3.25rem;
+      height: 3.25rem;
+      margin: 0 auto 1.1rem;
+      border-radius: 1rem;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: var(--accent-ink);
+      box-shadow: 0 14px 32px var(--glow);
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-weight: 800;
+      font-size: 1.35rem;
+      letter-spacing: -0.04em;
+    }
+    .brand {
+      margin: 0 0 0.85rem;
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: clamp(1.85rem, 4vw, 2.25rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.05;
+    }
+    h1 {
+      margin: 0 0 0.55rem;
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      font-weight: 500;
+    }
+    .hint {
+      margin-top: 1.35rem;
+      font-size: 0.8rem;
+      color: color-mix(in srgb, var(--ink-soft) 80%, transparent);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark" aria-hidden="true">SB</div>
+    <p class="brand">System Bunny</p>
+    <h1>You’re signed in</h1>
+    <p>You can close this tab and return to the app.</p>
+    <p class="hint">This window will try to close automatically.</p>
+  </main>
+  <script>
+    setTimeout(function () {
+      try { window.close(); } catch (e) {}
+    }, 1200);
+  </script>
+</body>
+</html>"#
+}
+
+/// Listens once on 127.0.0.1:17843 for the OAuth redirect after Google sign-in in the system browser.
+#[tauri::command]
+async fn wait_oauth_loopback_callback(timeout_secs: u64) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || wait_oauth_loopback_callback_sync(timeout_secs))
+        .await
+        .map_err(|e| format!("Google sign-in listener failed: {e}"))?
+}
+
+fn wait_oauth_loopback_callback_sync(timeout_secs: u64) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind(("127.0.0.1", OAUTH_LOOPBACK_PORT)).map_err(|e| {
+        format!(
+            "Could not start Google sign-in listener on 127.0.0.1:{OAUTH_LOOPBACK_PORT}: {e}"
+        )
+    })?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| e.to_string())?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs.max(30));
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err("Google sign-in timed out. Try again.".into());
+        }
+
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let target = req
+                    .lines()
+                    .next()
+                    .and_then(|line| {
+                        let mut parts = line.split_whitespace();
+                        let method = parts.next()?;
+                        let path = parts.next()?;
+                        if method.eq_ignore_ascii_case("GET") {
+                            Some(path.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| "Invalid Google sign-in callback request.".to_string())?;
+
+                let body = oauth_success_html();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+
+                return Ok(format!(
+                    "http://127.0.0.1:{OAUTH_LOOPBACK_PORT}{target}"
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => return Err(format!("Google sign-in listener error: {err}")),
+        }
+    }
+}
+
 /// Prevents the window contents from being captured by screen recording / screenshots.
 #[tauri::command]
 fn enable_content_protection(window: WebviewWindow) -> Result<(), String> {
@@ -455,7 +628,8 @@ pub fn run() {
             start_meeting_capture,
             stop_meeting_capture,
             meeting_capture_status,
-            ack_speech_segment
+            ack_speech_segment,
+            wait_oauth_loopback_callback
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]

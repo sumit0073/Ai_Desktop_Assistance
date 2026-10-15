@@ -18,9 +18,9 @@ This copies signup phone numbers from `user_metadata` onto `auth.users.phone` so
 2. Edge Function `send-email` sends with **Nodemailer → SES SMTP** (like MiniTM’s `email.service`)  
 3. User confirms / logs in / resets from that email  
 
-Covers: **welcome/confirm** (`signup`), invite, **OTP login** (`magiclink` → code), **forgot password** (`recovery` → Reset button), email change.
+Covers: **email verification** (`signup` → code in app), invite, **OTP login** (`magiclink` → code), **forgot password** (`recovery` → code in app), email change.
 
-Also apply migration `20261015110046_remove_auto_confirm_email_for_ses.sql` so signup is not auto-confirmed (otherwise no welcome/confirm email).
+Also apply migrations that remove email auto-confirm and restore phone sync without confirming email (`20261015110046_…`, `20261015183000_…`).
 
 ### 2a. Env keys (same as Mini Task Manager / OpsPick)
 
@@ -159,10 +159,34 @@ npx supabase functions serve send-sms --no-verify-jwt
 
 ## 6. How login works in the app
 
-1. Login → **Sign in with OTP**
+1. Login → **Sign in with OTP** (button under Sign in, right of Google)
 2. Choose **Email** or **SMS**
 3. **Send code** → `signInWithOtp` (`shouldCreateUser: false`)
 4. Enter 6-digit code → `verifyOtp` (`email` or `sms`)
 5. Session is stored like password login
 
 Users must already have an account (sign up with email/password + phone). SMS only works after the phone is on `auth.users.phone`.
+
+## 7. Google Sign-In (works for downloaded installs)
+
+Installed Windows/Mac apps open the **user’s real browser** for Google (account picker like a website), then return to the app via a local loopback URL.
+
+1. Create an **OAuth 2.0 Client ID** (**Web application**) in Google Cloud Console.
+2. **Authorized JavaScript origins** (needed for browser Vite / GIS fallback):
+   - `http://localhost:1420`
+3. **Authorized redirect URIs** (Google → Supabase):
+   - `https://<project-ref>.supabase.co/auth/v1/callback`
+4. Put the Client ID in `.env`:
+
+```env
+VITE_GOOGLE_CLIENT_ID=1234567890-xxxxxxxx.apps.googleusercontent.com
+```
+
+5. Supabase Dashboard → **Authentication → Providers → Google**: enable, same Client ID + Client Secret (secret only in Dashboard).
+6. Supabase → **Authentication → URL Configuration** → allow redirects:
+   - `http://127.0.0.1:17843`
+   - `http://127.0.0.1:17843/**`  
+   Or run: `node scripts/patch-auth-redirects.mjs`
+7. Restart `npm run tauri:dev` after changing `.env`.
+
+Packaged app: **Google sign in** → system browser → pick Gmail → “Signed in” tab → return to System Bunny.

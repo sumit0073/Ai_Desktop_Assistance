@@ -20,9 +20,13 @@ import {
 
 type Props = {
   onSwitchToLogin: (notice?: string) => void;
+  onNeedsEmailVerification?: (email: string) => void;
 };
 
-export function SignupPage({ onSwitchToLogin }: Props) {
+export function SignupPage({
+  onSwitchToLogin,
+  onNeedsEmailVerification,
+}: Props) {
   const { signUp, configured } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -84,8 +88,14 @@ export function SignupPage({ onSwitchToLogin }: Props) {
     setPassword("");
     setConfirmPassword("");
     setSubmitting(false);
+
+    if (onNeedsEmailVerification) {
+      onNeedsEmailVerification(email.trim());
+      return;
+    }
+
     onSwitchToLogin(
-      "Account created. Check your email for a welcome/confirm message (Amazon SES), then sign in.",
+      "Account created. Check your email for a System Bunny verification code, then verify before signing in.",
     );
   };
 

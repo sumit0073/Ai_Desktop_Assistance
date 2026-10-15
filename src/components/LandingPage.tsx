@@ -7,18 +7,32 @@ import {
   ResetPasswordLinkPage,
 } from "../pages/ResetPasswordLinkPage";
 import { SignupPage } from "../pages/SignupPage";
+import { VerifyEmailPage } from "../pages/VerifyEmailPage";
 import { AuthTabs } from "./AuthTabs";
 import { ThemeToggle } from "./ThemeToggle";
 import { WindowControls } from "./WindowControls";
 import bunnyLogo from "../assets/system-bunny-logo.png";
 
-type AuthView = "login" | "signup" | "forgot" | "otp" | "reset-link";
+type AuthView =
+  | "login"
+  | "signup"
+  | "forgot"
+  | "otp"
+  | "reset-link"
+  | "verify-email";
 
-export function LandingPage() {
-  const [view, setView] = useState<AuthView>(() =>
-    isPasswordResetLinkLocation() ? "reset-link" : "login",
-  );
+type Props = {
+  /** Prefill verify screen when App gates an unverified session. */
+  forceVerifyEmail?: string | null;
+};
+
+export function LandingPage({ forceVerifyEmail = null }: Props) {
+  const [view, setView] = useState<AuthView>(() => {
+    if (forceVerifyEmail) return "verify-email";
+    return isPasswordResetLinkLocation() ? "reset-link" : "login";
+  });
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [verifyEmail, setVerifyEmail] = useState(forceVerifyEmail ?? "");
 
   const switchView = (next: AuthView) => {
     if (next === view) return;
@@ -32,6 +46,12 @@ export function LandingPage() {
     // Callers sometimes wire this to onClick — ignore non-string args (MouseEvent).
     setAuthNotice(typeof notice === "string" ? notice : null);
     setView("login");
+  };
+
+  const openVerifyEmail = (email: string, notice?: string | null) => {
+    setVerifyEmail(email);
+    setAuthNotice(typeof notice === "string" ? notice : null);
+    setView("verify-email");
   };
 
   const showTabs = view === "login" || view === "signup";
@@ -74,6 +94,12 @@ export function LandingPage() {
               Choose a new password. This page opened from your reset email.
             </p>
           )}
+          {view === "verify-email" && (
+            <p className="tagline">
+              Confirm your email with the code from System Bunny before you
+              start.
+            </p>
+          )}
         </section>
 
         <div className="auth-panel">
@@ -89,6 +115,12 @@ export function LandingPage() {
                 notice={authNotice}
                 onForgotPassword={() => switchView("forgot")}
                 onOtpLogin={() => switchView("otp")}
+                onNeedsEmailVerification={(email) =>
+                  openVerifyEmail(
+                    email,
+                    "Confirm your email with the code we sent, then sign in again if needed.",
+                  )
+                }
               />
             )}
             {view === "signup" && (
@@ -96,6 +128,12 @@ export function LandingPage() {
                 onSwitchToLogin={(notice) => {
                   backToLogin(notice ?? null);
                 }}
+                onNeedsEmailVerification={(email) =>
+                  openVerifyEmail(
+                    email,
+                    "Account created. Enter the verification code from your email.",
+                  )
+                }
               />
             )}
             {view === "forgot" && (
@@ -109,6 +147,12 @@ export function LandingPage() {
                 onDone={() =>
                   backToLogin("Password updated. Sign in with your new password.")
                 }
+              />
+            )}
+            {view === "verify-email" && (
+              <VerifyEmailPage
+                initialEmail={verifyEmail}
+                onBackToLogin={() => backToLogin()}
               />
             )}
           </div>

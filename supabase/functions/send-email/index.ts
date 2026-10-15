@@ -117,12 +117,22 @@ function resolveRedirectTo(emailData: HookPayload["email_data"]): string {
   return emailData.site_url?.trim() || "";
 }
 
+const BRAND = {
+  accent: "#0c6b5c",
+  accentSoft: "#e7f5f2",
+  ink: "#102433",
+  muted: "#5a6f7d",
+  line: "#d7e2e8",
+  bg: "#f4f7f9",
+  white: "#ffffff",
+} as const;
+
 function ctaButton(href: string, label: string): string {
   return (
     `<p style="margin:24px 0">` +
     `<a href="${escapeHtml(href)}" ` +
     `style="display:inline-block;padding:12px 22px;border-radius:10px;` +
-    `background:#3d8bfd;color:#ffffff;text-decoration:none;font-weight:700">` +
+    `background:${BRAND.accent};color:#ffffff;text-decoration:none;font-weight:700">` +
     `${escapeHtml(label)}</a></p>`
   );
 }
@@ -130,8 +140,117 @@ function ctaButton(href: string, label: string): string {
 function codeBlock(token: string): string {
   return (
     `<p style="font-size:28px;font-weight:700;letter-spacing:0.12em;` +
-    `font-family:ui-monospace,Consolas,monospace">${escapeHtml(token)}</p>`
+    `font-family:ui-monospace,Consolas,monospace;color:${BRAND.ink}">` +
+    `${escapeHtml(token)}</p>`
   );
+}
+
+/** Table-based shell for Gmail / Outlook / mobile (inline CSS only). */
+function wrapTransactionalHtml(innerHtml: string): string {
+  return (
+    `<!DOCTYPE html>` +
+    `<html lang="en">` +
+    `<head><meta charset="utf-8" />` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1" />` +
+    `<meta http-equiv="x-ua-compatible" content="ie=edge" />` +
+    `<title>System Bunny</title></head>` +
+    `<body style="margin:0;padding:0;background:${BRAND.bg};` +
+    `-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+    `style="background:${BRAND.bg};padding:28px 12px;">` +
+    `<tr><td align="center">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+    `style="max-width:560px;background:${BRAND.white};border:1px solid ${BRAND.line};` +
+    `border-radius:14px;overflow:hidden;">` +
+    `<tr><td style="padding:18px 28px;border-bottom:1px solid ${BRAND.line};` +
+    `font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;` +
+    `letter-spacing:0.02em;color:${BRAND.accent};">System Bunny</td></tr>` +
+    `<tr><td style="padding:28px 28px 8px;font-family:Arial,Helvetica,sans-serif;` +
+    `color:${BRAND.ink};font-size:15px;line-height:1.55;">${innerHtml}</td></tr>` +
+    `<tr><td style="padding:8px 28px 28px;font-family:Arial,Helvetica,sans-serif;` +
+    `font-size:12px;line-height:1.5;color:${BRAND.muted};border-top:1px solid ${BRAND.line};">` +
+    `© System Bunny. All rights reserved.</td></tr>` +
+    `</table></td></tr></table></body></html>`
+  );
+}
+
+function verificationCodeBox(token: string): string {
+  return (
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" ` +
+    `style="margin:22px 0;">` +
+    `<tr><td align="center" style="background:${BRAND.accentSoft};border:1px solid ${BRAND.line};` +
+    `border-radius:12px;padding:18px 16px;">` +
+    `<p style="margin:0 0 6px;font-family:Arial,Helvetica,sans-serif;font-size:12px;` +
+    `font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${BRAND.accent};">` +
+    `Verification code</p>` +
+    `<p style="margin:0;font-family:Consolas,'Courier New',monospace;font-size:32px;` +
+    `font-weight:700;letter-spacing:0.28em;color:${BRAND.ink};line-height:1.2;">` +
+    `${escapeHtml(token)}</p>` +
+    `</td></tr></table>`
+  );
+}
+
+/** Signup / resend confirmation — OTP in app only (no verify links). */
+function buildSignupVerificationEmail(
+  token: string,
+  kind: "signup" | "invite",
+): { subject: string; text: string; html: string } {
+  const subject =
+    kind === "invite"
+      ? "You’re invited to System Bunny — verify your email"
+      : "Verify your email address to get started with System Bunny";
+
+  const text =
+    `Welcome to System Bunny!\n\n` +
+    `Thanks for creating your System Bunny account. To complete your registration ` +
+    `and access your account, verify your email with this code:\n\n` +
+    `${token}\n\n` +
+    `How to verify your email:\n` +
+    `1. Open System Bunny.\n` +
+    `2. Log in using your email address and password.\n` +
+    `3. You will see an option to enter your verification code.\n` +
+    `4. Enter the verification code from this email.\n` +
+    `5. Click Verify email to complete the process.\n\n` +
+    `If your code expired: in System Bunny choose Resend code, then enter the new code.\n\n` +
+    `For your security, never share your verification code with anyone. ` +
+    `If you did not create a System Bunny account, you can safely ignore this email.\n\n` +
+    `© System Bunny. All rights reserved.\n`;
+
+  const html = wrapTransactionalHtml(
+    `<h1 style="margin:0 0 12px;font-size:22px;line-height:1.25;font-weight:700;` +
+      `color:${BRAND.ink};">Verify your email address</h1>` +
+      `<p style="margin:0 0 14px;font-size:16px;font-weight:700;color:${BRAND.ink};">` +
+      `Welcome to System Bunny!</p>` +
+      `<p style="margin:0 0 8px;color:${BRAND.muted};">` +
+      `Thanks for creating your System Bunny account. To complete your registration ` +
+      `and access your account, please verify your email address using the verification ` +
+      `code below.</p>` +
+      verificationCodeBox(token) +
+      `<h2 style="margin:8px 0 10px;font-size:16px;line-height:1.3;font-weight:700;` +
+      `color:${BRAND.ink};">How to verify your email</h2>` +
+      `<ol style="margin:0 0 18px;padding-left:20px;color:${BRAND.muted};">` +
+      `<li style="margin:0 0 8px;">Open <strong style="color:${BRAND.ink};">System Bunny</strong>.</li>` +
+      `<li style="margin:0 0 8px;">Log in using your email address and password.</li>` +
+      `<li style="margin:0 0 8px;">You will see an option to enter your verification code.</li>` +
+      `<li style="margin:0 0 8px;">Enter the verification code from this email.</li>` +
+      `<li style="margin:0 0 8px;">Click <strong style="color:${BRAND.ink};">Verify email</strong> ` +
+      `to complete the process.</li>` +
+      `</ol>` +
+      `<h2 style="margin:4px 0 10px;font-size:16px;line-height:1.3;font-weight:700;` +
+      `color:${BRAND.ink};">Is your verification code expired?</h2>` +
+      `<p style="margin:0 0 18px;color:${BRAND.muted};">` +
+      `If your verification code has expired, return to System Bunny and select ` +
+      `<strong style="color:${BRAND.ink};">Resend code</strong>. Check your email for the new code, ` +
+      `enter it in the verification field, and click ` +
+      `<strong style="color:${BRAND.ink};">Verify email</strong>.</p>` +
+      `<p style="margin:0;padding:14px 16px;background:${BRAND.bg};border-radius:10px;` +
+      `border:1px solid ${BRAND.line};font-size:13px;color:${BRAND.muted};">` +
+      `<strong style="color:${BRAND.ink};">Security notice:</strong> For your security, never share ` +
+      `your verification code with anyone. If you did not create a System Bunny account, ` +
+      `you can safely ignore this email.</p>`,
+  );
+
+  return { subject, text, html };
 }
 
 function buildMessage(
@@ -155,32 +274,12 @@ function buildMessage(
 
   switch (action) {
     case "signup":
-    case "invite": {
-      const subject =
-        action === "invite"
-          ? "You’re invited to System Bunny"
-          : "Confirm your System Bunny account";
-      if (verifyUrl) {
-        return {
-          subject,
-          text:
-            `Welcome to System Bunny.\n\nConfirm your email:\n${verifyUrl}\n\n` +
-            `Or enter this code in the app:\n${token}\n`,
-          html:
-            `<h2>Welcome to System Bunny</h2>` +
-            `<p>Confirm your email to finish setup.</p>` +
-            ctaButton(verifyUrl, "Confirm email") +
-            `<p>Or enter this code in the app:</p>${codeBlock(token)}`,
-        };
-      }
-      return {
-        subject,
-        text: `Welcome to System Bunny.\n\nEnter this confirmation code:\n\n${token}\n`,
-        html:
-          `<h2>Welcome to System Bunny</h2>` +
-          `<p>Enter this confirmation code in the app:</p>${codeBlock(token)}`,
-      };
-    }
+    case "invite":
+      // Desktop OTP flow via SES — no confirm link/button.
+      return buildSignupVerificationEmail(
+        token,
+        action === "invite" ? "invite" : "signup",
+      );
     case "magiclink":
     case "email":
       return {
