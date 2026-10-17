@@ -57,6 +57,8 @@ pub struct SpeechSegmentEvent {
     pub source: AudioSourceKind,
     pub started_at_ms: u64,
     pub ended_at_ms: u64,
+    /// Wall-clock ms when this event was emitted to the frontend (latency correlate).
+    pub emitted_at_ms: u64,
     pub sample_rate: u32,
     pub duration_ms: u32,
     /// 16-bit mono PCM WAV, base64-encoded.

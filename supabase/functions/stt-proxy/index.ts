@@ -43,7 +43,8 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-request-id",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Expose-Headers": "x-request-id, retry-after",
+  "Access-Control-Expose-Headers":
+    "x-request-id, retry-after, x-upstream-ms, x-proxy-ms",
 };
 
 function json(
@@ -247,6 +248,7 @@ Deno.serve(async (req) => {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    const upstreamStarted = Date.now();
 
     let upstream: Response;
     try {
@@ -277,14 +279,20 @@ Deno.serve(async (req) => {
         },
         aborted ? 504 : 502,
         requestId,
+        {
+          "x-upstream-ms": String(Date.now() - upstreamStarted),
+          "x-proxy-ms": String(Date.now() - started),
+        },
       );
     } finally {
       clearTimeout(timer);
     }
 
+    const upstreamMs = Date.now() - upstreamStarted;
+
     if (!upstream.ok) {
       console.error(
-        `[stt-proxy] ${requestId} groq_status=${upstream.status} user=${user.id}`,
+        `[stt-proxy] ${requestId} groq_status=${upstream.status} user=${user.id} upstream_ms=${upstreamMs}`,
       );
       const status =
         upstream.status === 429
@@ -309,6 +317,10 @@ Deno.serve(async (req) => {
         },
         status,
         requestId,
+        {
+          "x-upstream-ms": String(upstreamMs),
+          "x-proxy-ms": String(Date.now() - started),
+        },
       );
     }
 
@@ -329,23 +341,36 @@ Deno.serve(async (req) => {
         { message: "Unexpected transcription response.", requestId },
         502,
         requestId,
+        {
+          "x-upstream-ms": String(upstreamMs),
+          "x-proxy-ms": String(Date.now() - started),
+        },
       );
     }
 
-    // Success — no transcript content in logs.
+    const proxyMs = Date.now() - started;
+    // Success — no transcript content in logs. Timing scalars only.
     // Quota was consumed at begin (attempt-based) so retries still cost budget.
     console.log(
-      `[stt-proxy] ${requestId} ok user=${user.id} bytes=${byteLength} units=${units}`,
+      `[stt-proxy] ${requestId} ok user=${user.id} bytes=${byteLength} units=${units} upstream_ms=${upstreamMs} proxy_ms=${proxyMs} model=${model}`,
     );
     await logProxyEvent(supabase, {
       requestId,
       kind: "stt",
       event: "ok",
       httpStatus: 200,
-      latencyMs: Date.now() - started,
+      latencyMs: proxyMs,
     });
 
-    return json({ text, requestId }, 200, requestId);
+    return json(
+      { text, requestId },
+      200,
+      requestId,
+      {
+        "x-upstream-ms": String(upstreamMs),
+        "x-proxy-ms": String(proxyMs),
+      },
+    );
   } catch (err) {
     console.error(`[stt-proxy] ${requestId} unhandled`, err);
     return json(

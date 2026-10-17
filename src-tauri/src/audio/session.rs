@@ -17,6 +17,14 @@ use super::types::{
 
 const MAX_PENDING_SEGMENTS: usize = 4;
 
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub struct MeetingCaptureState {
     inner: Mutex<Option<ActiveSession>>,
     pending: Arc<AtomicUsize>,
@@ -80,10 +88,23 @@ fn make_segment_sink(app: AppHandle, pending: Arc<AtomicUsize>) -> SegmentSink {
     Arc::new(move |(segment, evidence): (FinalizedSegment, SpeechEvidencePayload)| {
         let current = pending.load(Ordering::SeqCst);
         // Drop interim partials when the UI/STT queue is busy so finals stay responsive.
+        // Frontend should ack promptly after accept (not after STT) so this rarely trips.
         if segment.is_partial && current > 0 {
+            eprintln!(
+                "[audio-latency] drop_partial source={} pending={} utterance={}",
+                segment.source.as_str(),
+                current,
+                segment.utterance_id
+            );
             return;
         }
         if current >= MAX_PENDING_SEGMENTS {
+            eprintln!(
+                "[audio-latency] drop_over_cap source={} pending={} partial={}",
+                segment.source.as_str(),
+                current,
+                segment.is_partial
+            );
             return;
         }
         pending.fetch_add(1, Ordering::SeqCst);
@@ -97,12 +118,26 @@ fn make_segment_sink(app: AppHandle, pending: Arc<AtomicUsize>) -> SegmentSink {
             }
         };
 
+        let emitted_at_ms = now_ms();
+        let speech_to_emit_ms = emitted_at_ms.saturating_sub(segment.started_at_ms);
+        // Privacy-safe timing only — no PCM / no transcript.
+        eprintln!(
+            "[audio-latency] emit id_suffix={} source={} partial={} audio_ms={} speech_to_emit_ms={} pending={}",
+            &segment.utterance_id.get(..8).unwrap_or(&segment.utterance_id),
+            segment.source.as_str(),
+            segment.is_partial,
+            duration_ms,
+            speech_to_emit_ms,
+            pending.load(Ordering::SeqCst)
+        );
+
         let event = SpeechSegmentEvent {
             id: Uuid::new_v4().to_string(),
             utterance_id: segment.utterance_id.clone(),
             source: segment.source,
             started_at_ms: segment.started_at_ms,
             ended_at_ms: segment.ended_at_ms,
+            emitted_at_ms,
             sample_rate: segment.sample_rate,
             duration_ms,
             wav_base64: STANDARD.encode(bytes),

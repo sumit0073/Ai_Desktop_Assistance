@@ -3,11 +3,22 @@ import {
   extractMermaidBlock,
   getArchitectureDetail,
   hasMermaidBlock,
+  isArchitectureAspectFollowUp,
   isFreshArchitectureTopic,
   looksLikeArchitecture,
 } from "./architectureDetect";
 import { shouldAllowDirectGroqChat } from "./chatProxyValidation";
-import { extractStreamDeltaText, type StreamDelta } from "./aiStreamParse";
+import {
+  architectureMaxTokens,
+  DEFAULT_CHAT_MAX_TOKENS,
+  shouldContinueArchitectureOutput,
+  type ChatFinishReason,
+} from "./aiOutputComplete";
+import {
+  extractStreamDeltaText,
+  extractStreamFinishReason,
+  type StreamDelta,
+} from "./aiStreamParse";
 import {
   normalizeMermaidInMarkdown,
   replaceFirstMermaidBlock,
@@ -21,6 +32,10 @@ export {
   hasMermaidBlock,
   looksLikeArchitecture,
 } from "./architectureDetect";
+export {
+  looksLikeTruncatedOutput,
+  shouldContinueArchitectureOutput,
+} from "./aiOutputComplete";
 
 export type AnalysisHistoryMessage = {
   role: "user" | "assistant";
@@ -72,7 +87,9 @@ Style rules (ChatGPT-like):
 - Keep structure readable — not a giant wall of text.
 - Prefer clear explanations; add a short follow-up offer when useful.
 - For normal screenshots (not architecture), say what matters on screen, any blocker/error, and one concrete next action.
-- When prior messages exist, continue that thread. Do not ask which topic the user means if the subject is already clear.`;
+- When prior messages exist, continue that thread. Do not ask which topic the user means if the subject is already clear.
+- When the user message names a Question, answer that Question first and directly. Do not invent a different assignment (especially not an unrelated system architecture).
+- Only produce a full HLD/LLD, Mermaid architecture diagram, or complete system design when the Question explicitly asks you to design/draw one, or architecture mode is clearly requested.`;
 
 const MERMAID_DIAGRAM_RULES = `## Mermaid diagram rules (must render cleanly)
 - ALWAYS use \`flowchart TB\` — vertical STACK only (NEVER \`flowchart LR\` / sideways-long layouts)
@@ -82,16 +99,19 @@ const MERMAID_DIAGRAM_RULES = `## Mermaid diagram rules (must render cleanly)
   3. MIDDLE — Core domain services
   4. LOWER — Messaging / realtime (when relevant)
   5. BOTTOM — Data stores / caches
-- Declare subgraphs in that exact top→bottom order
+  6. Optional BOTTOM/SIDE — External integrations
+- Declare subgraphs in that exact top→bottom order (adapt if the system truly differs)
 - Inside each subgraph put \`direction LR\` so peer boxes in the SAME layer sit side-by-side; the layers themselves still stack top→bottom
-- Edges are downward connectors only: upper-layer node \`-->\` lower-layer node. Do not chain layers left-to-right
-- Compact but readable: short labels (2–4 words), prefer fewer wider layers over one sideways-long ribbon
-- Do not cram — keep enough nodes to stay recognizable; do not sprawl empty horizontal chains
-- Prefer ~3–6 boxes per layer when possible so the stack stays balanced
+- Edges are mostly downward: upper-layer node \`-->\` lower-layer node. Prefer Client→Gateway→Service→Store hops; avoid long diagonals and same-layer spaghetti
+- Do NOT draw a full mesh (every service ↔ every DB/queue). Wire each service only to the stores/queues it owns or calls
+- Prefer hub-and-spoke through the gateway/edge for client entry; service-to-service edges only when they are real sync calls
+- Compact subgraphs sized to their contents — never invent filler nodes that stretch empty group boxes
+- Short labels (2–4 words, ≤ ~28 chars). Prefer "Order Service" over long parenthetical titles
+- Prefer ~2–5 boxes per layer (up to ~6 when needed) so layers stay balanced and readable
 - Use \`sequenceDiagram\` / \`erDiagram\` only when the user explicitly asks for that diagram type
-- Meaningful unique CamelCase node IDs (TripService, RedisCache) — IDs are not display labels
+- Meaningful unique CamelCase node IDs (OrderService, RedisCache) — IDs are not display labels
 - Every node needs a short human-readable label
-- Use shapes: \`[Service]\`, \`[(Database/Cache)]\`, messaging as \`[(Kafka)]\` or \`[WebSocket Gateway]\`, externals as \`[[Payment Provider]]\` when useful
+- Use shapes: \`[Service]\`, \`[(Database/Cache)]\`, messaging as \`[(Kafka)]\` or \`[WebSocket Gateway]\`, externals as \`[[Payment]]\` when useful
 - Organize into clear subgraphs with unique CamelCase id + quoted title, typically:
   - \`subgraph clients["Clients"]\`
   - \`subgraph apiGateway["API Gateway"]\` (auth/edge here when relevant)
@@ -100,12 +120,11 @@ const MERMAID_DIAGRAM_RULES = `## Mermaid diagram rules (must render cleanly)
   - \`subgraph dataStores["Data Stores"]\`
   - Optional \`subgraph external["External"]\` for third parties
 - NEVER mangle ids like \`subgraph ApiLayer_API_Layer\` or duplicate the title in the id
-- Avoid nested subgraphs unless they clearly help
-- Explicit edges only: one \`-->\` (sync) or \`-.->\` (async/events) per line
-- Connect services only to the stores/queues they actually use — do not wire every service to every database
+- Avoid nested subgraphs unless they clearly help; never wrap the whole chart in one giant outer subgraph
+- Explicit edges only: one \`-->\` (sync) or \`-.->\` (async/events) per line; no duplicate edges
 - Label only important edges; keep labels to a few words
 - No \`%%\` comments, no \`click\`/\`link\`, no HTML in labels, no external URLs
-- Prefer a readable medium HLD; if the design is huge, keep one clear stacked overview rather than an unreadable giant`;
+- Prefer a readable stacked overview. If the system is huge: one clear primary diagram covering the main path, and briefly note which subsystems would get their own focused diagrams — do not pack every infra box into one unreadable canvas`;
 
 function buildArchitectureSystemPrompt(detail: ArchitectureDetail): string {
   const detailBlock =
@@ -303,48 +322,57 @@ async function groqFetch(
   }
 }
 
+type StreamReadResult = {
+  text: string;
+  finishReason: ChatFinishReason;
+};
+
 function appendSsePayload(
   payload: string,
-  full: string,
+  state: StreamReadResult,
   onChunk?: (text: string) => void,
-): string {
-  if (!payload || payload === "[DONE]") return full;
+): StreamReadResult {
+  if (!payload || payload === "[DONE]") return state;
   try {
     const json = JSON.parse(payload) as StreamDelta;
+    const finish = extractStreamFinishReason(json);
+    const finishReason: ChatFinishReason = finish
+      ? (finish as ChatFinishReason)
+      : state.finishReason;
     const piece = extractStreamDeltaText(json);
     if (piece) {
-      const next = full + piece;
-      onChunk?.(next);
-      return next;
+      const text = state.text + piece;
+      onChunk?.(text);
+      return { text, finishReason };
     }
+    return { text: state.text, finishReason };
   } catch {
     // ignore malformed / partial frames
   }
-  return full;
+  return state;
 }
 
 /** Parse OpenAI/Groq SSE chat.completion.chunk frames into text deltas. */
 async function readChatCompletionStream(
   response: Response,
   onChunk?: (text: string) => void,
-): Promise<string> {
+): Promise<StreamReadResult> {
+  let state: StreamReadResult = { text: "", finishReason: null };
   const body = response.body;
   if (!body) {
     const raw = await response.text();
-    let full = "";
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed.startsWith("data:")) continue;
-      full = appendSsePayload(trimmed.slice(5).trim(), full, onChunk);
+      state = appendSsePayload(trimmed.slice(5).trim(), state, onChunk);
     }
-    if (!full.trim()) throw new Error("AI returned an empty response.");
-    return full;
+    if (!state.text.trim()) throw new Error("AI returned an empty response.");
+    return state;
   }
 
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let full = "";
 
   while (true) {
     const { done, value } = await reader.read();
@@ -361,32 +389,34 @@ async function readChatCompletionStream(
       if (!trimmed || trimmed.startsWith(":")) continue;
       if (!trimmed.startsWith("data:")) continue;
 
-      full = appendSsePayload(trimmed.slice(5).trim(), full, onChunk);
+      state = appendSsePayload(trimmed.slice(5).trim(), state, onChunk);
     }
   }
 
   const trailing = buffer.trim();
   if (trailing.startsWith("data:")) {
-    full = appendSsePayload(trailing.slice(5).trim(), full, onChunk);
+    state = appendSsePayload(trailing.slice(5).trim(), state, onChunk);
   }
 
-  if (!full.trim()) {
+  if (!state.text.trim()) {
     throw new Error("AI returned an empty response.");
   }
-  return full;
+  return state;
 }
 
 type CompleteChatOptions = {
   onChunk?: (text: string) => void;
   signal?: AbortSignal;
   accessToken?: string;
+  /** Completion budget; architecture uses a higher value. */
+  maxTokens?: number;
 };
 
 async function completeChatViaProxy(
   model: string,
   messages: ChatMessage[],
   options: CompleteChatOptions,
-): Promise<string> {
+): Promise<StreamReadResult> {
   const proxyUrl = getChatProxyUrl();
   if (!proxyUrl) {
     throw new Error("VITE_CHAT_PROXY_URL is not configured.");
@@ -409,6 +439,7 @@ async function completeChatViaProxy(
         model,
         messages,
         temperature: 0.35,
+        max_tokens: options.maxTokens ?? DEFAULT_CHAT_MAX_TOKENS,
         stream: true,
       }),
       signal: options.signal,
@@ -435,7 +466,7 @@ async function completeChatViaDirectGroqDev(
   model: string,
   messages: ChatMessage[],
   options: CompleteChatOptions,
-): Promise<string> {
+): Promise<StreamReadResult> {
   const apiKey = getClientDevApiKey();
   if (!apiKey) {
     throw new Error(
@@ -456,7 +487,11 @@ async function completeChatViaDirectGroqDev(
         model,
         messages,
         temperature: 0.35,
+        max_tokens: options.maxTokens ?? DEFAULT_CHAT_MAX_TOKENS,
         stream: true,
+        ...(model.startsWith("openai/gpt-oss")
+          ? { include_reasoning: false }
+          : {}),
       }),
       signal: options.signal,
     });
@@ -482,7 +517,7 @@ async function completeChat(
   model: string,
   messages: ChatMessage[],
   options: CompleteChatOptions = {},
-): Promise<string> {
+): Promise<StreamReadResult> {
   const route = chatRouting();
   if (route.mode === "proxy") {
     return completeChatViaProxy(model, messages, options);
@@ -557,7 +592,7 @@ async function repairMissingArchitecture(
   chatOpts: CompleteChatOptions,
 ): Promise<string> {
   const system = buildArchitectureSystemPrompt(detail);
-  return completeChat(
+  const result = await completeChat(
     getTextModel(),
     [
       { role: "system", content: system },
@@ -566,15 +601,16 @@ async function repairMissingArchitecture(
         role: "user",
         content:
           `Rewrite as a ${detail} architecture response with a valid \`\`\`mermaid flowchart TB\`\`\` block in vertical stack formation (top→bottom like grandfather→father→son — never sideways LR). ` +
-          `Stack layers Clients → API Gateway → Core Services → Messaging → Data Stores; use direction LR inside each subgraph for peers; keep labels short and compact but readable. ` +
+          `Stack layers Clients → API Gateway → Core Services → Messaging → Data Stores → External; use direction LR inside each subgraph for peers; short labels; sparse real edges only (no service↔every-DB mesh); compact groups. ` +
           `Preserve the same system intent and detail level (${detail}). ` +
           `Use system-specific subgraphs with unique ids and quoted titles (never mangled ids like ApiLayer_API_Layer). ` +
           `Then include Major Components, Database and Storage Strategy, Key Workflows, Scalability and reliability, and Assumptions and trade-offs.\n\nPrevious answer:\n` +
           previous,
       },
     ],
-    chatOpts,
+    { ...chatOpts, maxTokens: architectureMaxTokens(detail) },
   );
+  return result.text;
 }
 
 async function repairInvalidMermaidSyntax(
@@ -592,7 +628,7 @@ async function repairInvalidMermaidSyntax(
         content:
           `You fix Mermaid flowchart syntax only. Preserve architecture meaning and ${detail} detail level. ` +
           `Return ONLY a \`\`\`mermaid flowchart TB\`\`\` fence — no prose. ` +
-          `Vertical stack only: layers top→bottom, direction LR inside subgraphs, downward edges, short labels. ` +
+          `Vertical stack only: layers top→bottom, direction LR inside subgraphs, sparse downward edges, short labels, no nested mega-containers. ` +
           `Unique CamelCase subgraph ids with quoted titles; one edge per line; no comments/click/HTML.`,
       },
       {
@@ -601,12 +637,45 @@ async function repairInvalidMermaidSyntax(
           `Validation error: ${reason}\n\nBroken chart:\n\`\`\`mermaid\n${invalidChart}\n\`\`\`\n\nReturn a corrected Mermaid block only.`,
       },
     ],
-    { signal: chatOpts.signal, accessToken: chatOpts.accessToken },
+    {
+      signal: chatOpts.signal,
+      accessToken: chatOpts.accessToken,
+      maxTokens: 2048,
+    },
   );
-  const repairedBody = extractMermaidBlock(fixed) ?? fixed;
+  const repairedBody = extractMermaidBlock(fixed.text) ?? fixed.text;
   const validation = validateMermaidStructure(repairedBody);
   if (!validation.ok) return markdown;
   return replaceFirstMermaidBlock(markdown, validation.chart);
+}
+
+/** One continuation when the first architecture stream hit a length cap. */
+async function continueTruncatedCompletion(
+  model: string,
+  system: string,
+  priorMessages: ChatMessage[],
+  userText: string,
+  partial: string,
+  chatOpts: CompleteChatOptions,
+): Promise<string> {
+  const result = await completeChat(
+    model,
+    [
+      { role: "system", content: system },
+      ...historyAsTextOnly(priorMessages),
+      { role: "user", content: userText },
+      { role: "assistant", content: partial },
+      {
+        role: "user",
+        content:
+          "Continue exactly where you left off. Do not restart the answer. " +
+          "Finish any incomplete sentence, close any open Mermaid/code fence, " +
+          "and complete the remaining required sections.",
+      },
+    ],
+    chatOpts,
+  );
+  return partial + result.text;
 }
 
 /** Chat + optional screenshot analysis via authenticated chat-proxy (or DEV direct). */
@@ -645,12 +714,19 @@ export async function analyzeWithAi(input: AnalysisInput): Promise<string> {
   const detail: ArchitectureDetail =
     input.architectureDetail ?? getArchitectureDetail(prompt);
   const freshTopic = isFreshArchitectureTopic(prompt, priorWasArchitecture);
+  const aspectFollowUp =
+    priorWasArchitecture &&
+    !input.forceArchitecture &&
+    isArchitectureAspectFollowUp(prompt);
 
   // Screenshots alone are not architecture. Follow-ups expand only when asked.
+  // Aspect follow-ups ("What about scalability?") stay on the normal prompt —
+  // they must not regenerate a full Mermaid architecture.
   const architectureMode =
-    Boolean(input.forceArchitecture) ||
-    looksLikeArchitecture(prompt, hasScreenshot) ||
-    (priorWasArchitecture && !freshTopic && DETAILED_CONTINUE.test(prompt));
+    !aspectFollowUp &&
+    (Boolean(input.forceArchitecture) ||
+      looksLikeArchitecture(prompt, hasScreenshot) ||
+      (priorWasArchitecture && !freshTopic && DETAILED_CONTINUE.test(prompt)));
 
   const userText = buildUserText({
     prompt,
@@ -659,6 +735,7 @@ export async function analyzeWithAi(input: AnalysisInput): Promise<string> {
     detail,
     freshTopic,
     forced: Boolean(input.forceArchitecture),
+    aspectFollowUp,
   });
 
   const priorMessages: ChatMessage[] = history.map((m) =>
@@ -677,30 +754,64 @@ export async function analyzeWithAi(input: AnalysisInput): Promise<string> {
     imageBase64 || historyHasImage ? getVisionModel() : getTextModel();
 
   const useArchitecturePrompt = architectureMode;
+  const maxTokens = useArchitecturePrompt
+    ? architectureMaxTokens(detail)
+    : DEFAULT_CHAT_MAX_TOKENS;
+  const requestOpts: CompleteChatOptions = { ...chatOpts, maxTokens };
 
   const system = useArchitecturePrompt
     ? `${buildArchitectureSystemPrompt(detail)}
 
 If the input is NOT an architecture/system-design question, ignore the architecture pipeline and answer briefly like a normal assistant (what is on screen, blockers, one next action).
-When prior messages exist and this is a follow-up, expand or refine that architecture — preserve component names and boundaries.
-When marked as a new architecture topic, do not reuse the previous system's components.`
-    : SYSTEM_PROMPT;
+When prior messages exist and this is a follow-up that asks to expand the diagram, expand or refine that architecture — preserve component names and boundaries.
+When marked as a new architecture topic, do not reuse the previous system's components.
+Complete every required section. Do not stop mid-sentence.`
+    : aspectFollowUp
+      ? `${SYSTEM_PROMPT}
 
-  let text = await completeChat(
-    model,
-    [
-      { role: "system", content: system },
-      ...effectivePrior,
-      { role: "user", content: toUserContent(userText, imageBase64) },
-    ],
-    chatOpts,
-  );
+The prior assistant message is an architecture for the same system. Answer ONLY the user's follow-up aspect (e.g. scalability). Be concise. Do not regenerate a full architecture, Mermaid diagram, or all sections unless they explicitly ask.`
+      : SYSTEM_PROMPT;
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: system },
+    ...effectivePrior,
+    { role: "user", content: toUserContent(userText, imageBase64) },
+  ];
+
+  let stream = await completeChat(model, messages, requestOpts);
+  let text = stream.text;
+
+  if (
+    shouldContinueArchitectureOutput({
+      text,
+      finishReason: stream.finishReason,
+      architectureMode: useArchitecturePrompt,
+    })
+  ) {
+    if (import.meta.env.DEV) {
+      console.debug("[ai-complete]", {
+        event: "architecture_continue",
+        finishReason: stream.finishReason,
+        partialChars: text.length,
+        maxTokens,
+      });
+    }
+    text = await continueTruncatedCompletion(
+      model,
+      system,
+      effectivePrior,
+      userText,
+      text,
+      requestOpts,
+    );
+    chatOpts.onChunk?.(text);
+  }
 
   const shouldHaveMermaid =
     useArchitecturePrompt &&
     (Boolean(input.forceArchitecture) ||
       looksLikeArchitecture(prompt, hasScreenshot) ||
-      priorWasArchitecture ||
+      (priorWasArchitecture && DETAILED_CONTINUE.test(prompt)) ||
       /\b(architecture|mermaid|system design|major components)\b/i.test(text));
 
   if (shouldHaveMermaid && !hasMermaidBlock(text)) {
@@ -708,7 +819,7 @@ When marked as a new architecture topic, do not reuse the previous system's comp
       detail,
       effectivePrior,
       text,
-      chatOpts,
+      requestOpts,
     );
   }
 
@@ -749,14 +860,30 @@ function buildUserText(opts: {
   detail: ArchitectureDetail;
   freshTopic: boolean;
   forced: boolean;
+  aspectFollowUp?: boolean;
 }): string {
-  const { prompt, hasScreenshot, architectureMode, detail, freshTopic, forced } =
-    opts;
+  const {
+    prompt,
+    hasScreenshot,
+    architectureMode,
+    detail,
+    freshTopic,
+    forced,
+    aspectFollowUp,
+  } = opts;
 
   const detailNote =
     detail === "detailed"
       ? "Detail level: DETAILED — expand the design while preserving existing names/boundaries when prior architecture exists."
       : "Detail level: MEDIUM — optimize for a clear readable overview.";
+
+  if (aspectFollowUp) {
+    return (
+      `${prompt}\n\n` +
+      `Answer only this follow-up about the prior architecture in this thread. ` +
+      `Do not redraw the full diagram or regenerate every section unless explicitly asked.`
+    );
+  }
 
   if (forced || (architectureMode && (prompt || !hasScreenshot))) {
     const base =
@@ -765,7 +892,10 @@ function buildUserText(opts: {
     const fresh = freshTopic
       ? "\n[New architecture topic — do not reuse previous system components.]"
       : "";
-    return `${base}\n\n${detailNote}${fresh}`;
+    return (
+      `${base}\n\n${detailNote}${fresh}\n` +
+      `Produce a complete answer through Assumptions and trade-offs. Do not stop mid-sentence.`
+    );
   }
 
   if (hasScreenshot) {

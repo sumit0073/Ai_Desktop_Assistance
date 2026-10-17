@@ -2,7 +2,7 @@
 # and publishes downloadable installers on a GitHub Release.
 #
 # Trigger: Actions → "Build Desktop Installers" → Run workflow
-#   - version: e.g. 0.1.7 (optional; leave blank to use repo version)
+#   - version: e.g. 0.1.8 (optional; leave blank to use the version already in the repo)
 # Download: repo Releases page, or the workflow run Artifacts
 #
 # Required repository secrets:
@@ -20,12 +20,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.1.7). Leave empty to use the version already in the repo."
+        description: "Release version (e.g. 0.1.8). Leave empty to use the version already in the repo."
         required: false
         type: string
-        default: "0.1.7"
+        default: ""
       note:
-        description: "Optional release note (shown in the run summary)"
+        description: "Release title (shown on the GitHub Release). Leave empty for a plain version title."
         required: false
         type: string
         default: ""
@@ -303,9 +303,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.ver.outputs.version }}
-          name: System Bunny v${{ steps.ver.outputs.version }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.note != '' && inputs.note || format('System Bunny v{0}', steps.ver.outputs.version) }}
           body: |
-            **System Bunny v${{ steps.ver.outputs.version }}** — latest desktop installers.
+            ${{ github.event_name == 'workflow_dispatch' && inputs.note != '' && inputs.note || format('System Bunny v{0}', steps.ver.outputs.version) }}
+
+            Desktop installers for this build.
 
             ### Windows
             - **Setup (.exe)** — NSIS installer (recommended)

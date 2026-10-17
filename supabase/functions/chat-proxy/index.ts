@@ -24,6 +24,9 @@ const MAX_MESSAGES = 20;
 const MAX_TEXT_CHARS = 120_000;
 const MAX_IMAGE_CHARS = 2_100_000;
 const MAX_IMAGES = 2;
+const MIN_MAX_TOKENS = 256;
+const MAX_MAX_TOKENS = 8192;
+const DEFAULT_MAX_TOKENS = 2048;
 const UPSTREAM_TIMEOUT_MS = 90_000;
 
 const corsHeaders: Record<string, string> = {
@@ -58,6 +61,7 @@ function isDataImageUrl(url: string): boolean {
 type Validated = {
   model: string;
   temperature: number;
+  maxTokens: number;
   messages: unknown[];
   textChars: number;
   imageCount: number;
@@ -108,6 +112,24 @@ function validateBody(body: unknown): { ok: true; value: Validated } | {
       };
     }
     temperature = t;
+  }
+
+  let maxTokens = DEFAULT_MAX_TOKENS;
+  if (b.max_tokens !== undefined && b.max_tokens !== null) {
+    const n = Number(b.max_tokens);
+    if (
+      !Number.isFinite(n) ||
+      !Number.isInteger(n) ||
+      n < MIN_MAX_TOKENS ||
+      n > MAX_MAX_TOKENS
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        message: `max_tokens must be an integer between ${MIN_MAX_TOKENS} and ${MAX_MAX_TOKENS}.`,
+      };
+    }
+    maxTokens = n;
   }
 
   let textChars = 0;
@@ -203,6 +225,7 @@ function validateBody(body: unknown): { ok: true; value: Validated } | {
     value: {
       model,
       temperature,
+      maxTokens,
       messages: b.messages,
       textChars,
       imageCount,
@@ -370,6 +393,7 @@ Deno.serve(async (req) => {
           model: validated.value.model,
           messages: validated.value.messages,
           temperature: validated.value.temperature,
+          max_tokens: validated.value.maxTokens,
           stream: true,
           // gpt-oss defaults to putting tokens in `reasoning`; the desktop
           // client reads `delta.content`. Force final answer into content.

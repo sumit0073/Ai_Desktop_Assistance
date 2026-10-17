@@ -2,7 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { recordSttDiagnostic } from "../lib/sttDiagnostics";
+import {
+  completeSttLaneRequest,
+  createSttLaneState,
+  decideSttLaneRequest,
+  shouldApplySttResult,
+  type SttLaneState,
+} from "../lib/sttLaneScheduler";
+import {
+  installSttLatencyDevtools,
+  recordSttLatencyTrace,
+} from "../lib/sttLatency";
 import type { SpeechEvidenceTier } from "../lib/sanitizeTranscript";
+import type { TranscriptResult } from "../lib/transcribeAudio";
 
 export type MeetingAudioSource = "microphone" | "meeting";
 
@@ -41,6 +53,8 @@ export type SpeechSegmentEvent = {
   source: MeetingAudioSource;
   startedAtMs: number;
   endedAtMs: number;
+  /** Wall-clock ms when Rust emitted this event (latency correlate). */
+  emittedAtMs?: number;
   sampleRate: number;
   durationMs: number;
   wavBase64: string;
@@ -61,14 +75,7 @@ export type AudioPipelineError = {
   message: string;
 };
 
-type TranscriptResultLike = {
-  originalText: string;
-  text: string;
-  outcome?: string;
-  rejectionReason?: string;
-  model?: string;
-  requestId?: string;
-};
+type TranscriptResultLike = string | TranscriptResult;
 
 type Options = {
   /** Transcribe a WAV blob; empty `text` skips the UI bubble. */
@@ -92,7 +99,7 @@ type Options = {
       wavBytes?: number;
       mime?: string;
     },
-  ) => Promise<string | TranscriptResultLike>;
+  ) => Promise<TranscriptResultLike>;
   /** Same-source rolling context for Whisper prompt. */
   getRecentTranscript?: (source: MeetingAudioSource) => string;
   /** Recent same-source UI texts (for repeated weak-phrase detection). */
@@ -149,14 +156,12 @@ function parseLaneStatus(raw: unknown): CaptureLaneStatus {
         "Permission denied";
       return { kind: "permissionDenied", reason };
     }
-    // Externally tagged alternatives from serde
     if (typeof obj.reason === "string") {
       if ("Unavailable" in obj || obj.unavailable !== undefined) {
         return { kind: "unavailable", reason: obj.reason };
       }
     }
   }
-  // Internally tagged / adjacent forms from serde rename
   if (typeof raw === "object" && raw !== null) {
     const entries = Object.entries(raw as Record<string, unknown>);
     if (entries.length === 1) {
@@ -199,10 +204,6 @@ function base64ToWavBlob(base64: string): Blob {
   return new Blob([bytes], { type: "audio/wav" });
 }
 
-/**
- * Native dual-source meeting capture (Tauri/Rust + WebRTC VAD).
- * Only finalized, VAD-validated speech segments are transcribed.
- */
 function evidenceTier(
   evidence: SpeechEvidencePayload | undefined,
 ): SpeechEvidenceTier {
@@ -211,6 +212,16 @@ function evidenceTier(
   return "unknown";
 }
 
+function ackSegmentSoon(): void {
+  // Ack immediately so Rust pending does not block the next partial/final.
+  // FE concurrency is enforced by sttLaneScheduler instead.
+  void invoke("ack_speech_segment").catch(() => {});
+}
+
+/**
+ * Native dual-source meeting capture (Tauri/Rust + WebRTC VAD).
+ * Partials update live bubbles; finals reconcile in place.
+ */
 export function useMeetingCapture({
   transcribe,
   getRecentTranscript,
@@ -239,10 +250,20 @@ export function useMeetingCapture({
   const getRecentSameRef = useRef(getRecentSameSourceTexts);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
-  /** Per-source abort so a newer partial/final supersedes an in-flight STT call. */
-  const sourceAbortRef = useRef<
+  /** Per-source interim abort — never used to cancel finals. */
+  const interimAbortRef = useRef<
     Partial<Record<MeetingAudioSource, AbortController>>
   >({});
+  /** Per-source final abort — only cancelled on session stop. */
+  const finalAbortRef = useRef<
+    Partial<Record<MeetingAudioSource, AbortController>>
+  >({});
+  const laneStateRef = useRef<Record<MeetingAudioSource, SttLaneState>>({
+    microphone: createSttLaneState(),
+    meeting: createSttLaneState(),
+  });
+  /** Utterances that already received a final (block late partials). */
+  const finalizedUtterancesRef = useRef<Set<string>>(new Set());
   const inflightCountRef = useRef(0);
   const sessionIdRef = useRef("");
   const sessionEpochRef = useRef(0);
@@ -294,6 +315,7 @@ export function useMeetingCapture({
   }, []);
 
   useEffect(() => {
+    installSttLatencyDevtools();
     let unsubs: UnlistenFn[] = [];
     let cancelled = false;
 
@@ -304,22 +326,68 @@ export function useMeetingCapture({
           (event) => {
             const payload = event.payload;
             if (!payload?.id || !payload.wavBase64) return;
-            if (seenIdsRef.current.has(payload.id)) return;
+            if (seenIdsRef.current.has(payload.id)) {
+              ackSegmentSoon();
+              return;
+            }
             seenIdsRef.current.add(payload.id);
             if (seenIdsRef.current.size > 200) {
               seenIdsRef.current.clear();
             }
 
+            const feReceivedAt = performance.now();
+            const wallReceivedAt = Date.now();
             const isPartial = payload.status === "partial";
             const utteranceId =
               payload.utteranceId?.trim() || payload.id;
             const epochAtStart = sessionEpochRef.current;
             const sessionAtStart = sessionIdRef.current;
 
-            // Supersede any in-flight STT for this lane (newer partial/final wins).
-            sourceAbortRef.current[payload.source]?.abort();
+            // Release Rust backpressure immediately — do not wait for STT.
+            ackSegmentSoon();
+
+            if (
+              isPartial &&
+              finalizedUtterancesRef.current.has(utteranceId)
+            ) {
+              return;
+            }
+
+            const laneDecision = decideSttLaneRequest(
+              laneStateRef.current[payload.source],
+              isPartial,
+            );
+            laneStateRef.current[payload.source] = laneDecision.next;
+
+            if (laneDecision.action === "drop") {
+              if (import.meta.env.DEV) {
+                console.debug("[stt-schedule]", {
+                  action: "drop",
+                  reason: laneDecision.reason,
+                  source: payload.source,
+                  interim: isPartial,
+                  segmentId: payload.id,
+                });
+              }
+              return;
+            }
+
+            if (laneDecision.abortPriorInterim) {
+              interimAbortRef.current[payload.source]?.abort();
+              delete interimAbortRef.current[payload.source];
+            }
+
             const laneAbort = new AbortController();
-            sourceAbortRef.current[payload.source] = laneAbort;
+            if (isPartial) {
+              interimAbortRef.current[payload.source] = laneAbort;
+            } else {
+              // Finals: abort any interim; never aborted by later partials.
+              interimAbortRef.current[payload.source]?.abort();
+              delete interimAbortRef.current[payload.source];
+              finalAbortRef.current[payload.source] = laneAbort;
+            }
+
+            const generation = laneDecision.next.generation;
             const onSessionAbort = () => laneAbort.abort();
             abortRef.current?.signal.addEventListener(
               "abort",
@@ -331,6 +399,7 @@ export function useMeetingCapture({
             setBusy(true);
 
             void (async () => {
+              const scheduleDoneAt = performance.now();
               try {
                 if (cancelled) return;
                 if (
@@ -348,7 +417,6 @@ export function useMeetingCapture({
                 const tier = evidenceTier(payload.evidence);
                 const ev = payload.evidence;
                 const result = await transcribeRef.current(blob, {
-                  // Finals only — interim + rolling context biases hallucinations.
                   recentTranscript: isPartial ? undefined : recent,
                   interim: isPartial,
                   signal: laneAbort.signal,
@@ -373,6 +441,24 @@ export function useMeetingCapture({
                 ) {
                   return;
                 }
+
+                // Apply check uses in-flight generation BEFORE clearing lane state.
+                const applyOk = shouldApplySttResult(
+                  laneStateRef.current[payload.source],
+                  {
+                    generation,
+                    isPartial,
+                    utteranceFinalized:
+                      finalizedUtterancesRef.current.has(utteranceId),
+                  },
+                );
+                const completed = completeSttLaneRequest(
+                  laneStateRef.current[payload.source],
+                  { generation, isPartial },
+                );
+                laneStateRef.current[payload.source] = completed.next;
+                if (!completed.accept || !applyOk) return;
+
                 const originalText =
                   typeof result === "string"
                     ? result.trim()
@@ -381,6 +467,16 @@ export function useMeetingCapture({
                   typeof result === "string"
                     ? result.trim()
                     : (result.text ?? "").trim();
+                const timing =
+                  typeof result === "string" ? undefined : result.timing;
+                const model =
+                  typeof result === "string" ? undefined : result.model;
+                const requestId =
+                  typeof result === "string" ? undefined : result.requestId;
+                const outcome =
+                  typeof result === "string" ? undefined : result.outcome;
+
+                const uiStarted = performance.now();
                 if (text) {
                   await onTranscriptRef.current(text, payload.source, {
                     id: payload.id,
@@ -391,12 +487,20 @@ export function useMeetingCapture({
                     sessionId: sessionAtStart,
                     isPartial,
                   });
+                  if (!isPartial) {
+                    finalizedUtterancesRef.current.add(utteranceId);
+                    if (finalizedUtterancesRef.current.size > 80) {
+                      finalizedUtterancesRef.current.clear();
+                    }
+                  }
                 } else {
                   const reason =
                     typeof result === "string"
                       ? "stt_empty"
                       : (result.rejectionReason ??
-                        (originalText ? "rejected_hallucination" : "stt_empty"));
+                        (originalText
+                          ? "rejected_hallucination"
+                          : "stt_empty"));
                   onSegmentDiscardedRef.current?.({
                     source: payload.source,
                     utteranceId,
@@ -404,6 +508,42 @@ export function useMeetingCapture({
                     isPartial,
                   });
                 }
+                const uiApplyMs = Math.round(performance.now() - uiStarted);
+
+                const emittedAt = payload.emittedAtMs;
+                recordSttLatencyTrace({
+                  segmentId: payload.id,
+                  utteranceId,
+                  source: payload.source,
+                  interim: isPartial,
+                  model,
+                  requestId,
+                  audioDurationMs: payload.durationMs,
+                  outcome: text ? "accepted" : outcome ?? "stt_empty",
+                  stages: {
+                    speechToEmitMs:
+                      emittedAt !== undefined
+                        ? emittedAt - payload.startedAtMs
+                        : wallReceivedAt - payload.startedAtMs,
+                    emitToFeMs:
+                      emittedAt !== undefined
+                        ? wallReceivedAt - emittedAt
+                        : undefined,
+                    feScheduleMs: Math.round(scheduleDoneAt - feReceivedAt),
+                    sttRoundTripMs: timing?.sttRoundTripMs,
+                    proxyUpstreamMs: timing?.proxyUpstreamMs,
+                    proxyTotalMs: timing?.proxyTotalMs,
+                    sanitizeMs: timing?.sanitizeMs,
+                    uiApplyMs,
+                    speechToUiMs: text
+                      ? Math.round(Date.now() - payload.startedAtMs)
+                      : undefined,
+                    speechEndToUiMs:
+                      text && !isPartial
+                        ? Math.round(Date.now() - payload.endedAtMs)
+                        : undefined,
+                  },
+                });
               } catch (err) {
                 if (
                   (err instanceof DOMException && err.name === "AbortError") ||
@@ -416,26 +556,34 @@ export function useMeetingCapture({
                   err instanceof Error && err.message
                     ? err.message
                     : "Transcription failed.";
-                // Never fabricate a transcript on error.
                 onErrorRef.current?.(message, payload.source);
               } finally {
                 abortRef.current?.signal.removeEventListener(
                   "abort",
                   onSessionAbort,
                 );
-                if (sourceAbortRef.current[payload.source] === laneAbort) {
-                  delete sourceAbortRef.current[payload.source];
+                if (isPartial) {
+                  if (interimAbortRef.current[payload.source] === laneAbort) {
+                    delete interimAbortRef.current[payload.source];
+                  }
+                } else if (
+                  finalAbortRef.current[payload.source] === laneAbort
+                ) {
+                  delete finalAbortRef.current[payload.source];
+                }
+                // Ensure lane state clears even on abort/error.
+                const cleared = completeSttLaneRequest(
+                  laneStateRef.current[payload.source],
+                  { generation, isPartial },
+                );
+                if (cleared.accept) {
+                  laneStateRef.current[payload.source] = cleared.next;
                 }
                 inflightCountRef.current = Math.max(
                   0,
                   inflightCountRef.current - 1,
                 );
                 setBusy(inflightCountRef.current > 0);
-                try {
-                  await invoke("ack_speech_segment");
-                } catch {
-                  /* ignore outside Tauri */
-                }
               }
             })();
           },
@@ -492,6 +640,10 @@ export function useMeetingCapture({
     return () => {
       cancelled = true;
       abortRef.current?.abort();
+      for (const c of Object.values(interimAbortRef.current)) c?.abort();
+      for (const c of Object.values(finalAbortRef.current)) c?.abort();
+      interimAbortRef.current = {};
+      finalAbortRef.current = {};
       sessionEpochRef.current += 1;
       sessionIdRef.current = "";
       onSessionEndRef.current?.();
@@ -504,6 +656,15 @@ export function useMeetingCapture({
     try {
       abortRef.current?.abort();
       abortRef.current = new AbortController();
+      for (const c of Object.values(interimAbortRef.current)) c?.abort();
+      for (const c of Object.values(finalAbortRef.current)) c?.abort();
+      interimAbortRef.current = {};
+      finalAbortRef.current = {};
+      laneStateRef.current = {
+        microphone: createSttLaneState(),
+        meeting: createSttLaneState(),
+      };
+      finalizedUtterancesRef.current.clear();
       sessionEpochRef.current += 1;
       const sessionId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -533,6 +694,10 @@ export function useMeetingCapture({
 
   const stop = useCallback(async () => {
     abortRef.current?.abort();
+    for (const c of Object.values(interimAbortRef.current)) c?.abort();
+    for (const c of Object.values(finalAbortRef.current)) c?.abort();
+    interimAbortRef.current = {};
+    finalAbortRef.current = {};
     sessionEpochRef.current += 1;
     sessionIdRef.current = "";
     onSessionEndRef.current?.();

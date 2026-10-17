@@ -675,9 +675,21 @@ pub fn run() {
                 Shortcut::new(Some(chord), Code::ArrowRight),
             ];
 
+            // Previous crash / overlapping `tauri:dev` instances leave OS hotkeys
+            // registered. Clear ours first so Ctrl+Enter (and siblings) can bind.
+            if let Err(err) = app.global_shortcut().unregister_all() {
+                eprintln!("Failed to unregister prior global shortcuts: {err}");
+            }
+
             for shortcut in shortcuts {
                 if let Err(err) = app.global_shortcut().register(shortcut) {
-                    eprintln!("Failed to register shortcut {shortcut:?}: {err}");
+                    // Retry once after unregistering the conflicting chord.
+                    let _ = app.global_shortcut().unregister(shortcut);
+                    if let Err(err2) = app.global_shortcut().register(shortcut) {
+                        eprintln!(
+                            "Failed to register shortcut {shortcut:?}: {err} (retry: {err2})"
+                        );
+                    }
                 }
             }
 

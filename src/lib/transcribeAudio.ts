@@ -7,6 +7,7 @@ import {
   recordSttDiagnostic,
   recordSttSegmentTrace,
 } from "./sttDiagnostics";
+import { parseProxyTimingHeaders } from "./sttLatency";
 import { shouldAllowDirectGroqStt } from "./sttProxyValidation";
 import { buildWhisperPrompt } from "./sttVocabulary";
 import { isSupabaseConfigured, supabase } from "./supabase";
@@ -40,6 +41,13 @@ export type TranscriptResult = {
   rejectionReason?: string;
   model: string;
   requestId?: string;
+  /** Privacy-safe client timing (ms). */
+  timing?: {
+    sttRoundTripMs: number;
+    sanitizeMs: number;
+    proxyUpstreamMs?: number;
+    proxyTotalMs?: number;
+  };
 };
 
 export type TranscribeOptions = {
@@ -139,11 +147,14 @@ function finalizeTranscript(
   requestId: string | undefined,
   options?: TranscribeOptions,
   httpStatus?: number,
+  timing?: TranscriptResult["timing"],
 ): TranscriptResult {
+  const sanitizeStarted = performance.now();
   const detailed = sanitizeTranscriptDetailed(originalText, {
     speechEvidence: options?.speechEvidence ?? "unknown",
     recentSameSource: options?.recentSameSourceTexts,
   });
+  const sanitizeMs = Math.round(performance.now() - sanitizeStarted);
 
   let outcome: TranscriptOutcome;
   if (!originalText.trim()) {
@@ -227,6 +238,9 @@ function finalizeTranscript(
     rejectionReason: detailed.reason,
     model,
     requestId,
+    timing: timing
+      ? { ...timing, sanitizeMs }
+      : { sttRoundTripMs: 0, sanitizeMs },
   };
 }
 
@@ -234,11 +248,14 @@ async function parseTranscriptResponse(
   response: Response,
   model: string,
   options?: TranscribeOptions,
+  fetchStartedAt?: number,
 ): Promise<TranscriptResult> {
-  const requestId =
-    response.headers.get("x-request-id")?.trim() ||
-    response.headers.get("X-Request-Id")?.trim() ||
-    undefined;
+  const proxyTiming = parseProxyTimingHeaders(response.headers);
+  const requestId = proxyTiming.requestId;
+  const sttRoundTripMs =
+    fetchStartedAt !== undefined
+      ? Math.round(performance.now() - fetchStartedAt)
+      : 0;
 
   if (!response.ok) {
     let detail = `Transcription failed (${response.status}).`;
@@ -263,6 +280,12 @@ async function parseTranscriptResponse(
     requestId,
     options,
     response.status,
+    {
+      sttRoundTripMs,
+      sanitizeMs: 0,
+      proxyUpstreamMs: proxyTiming.proxyUpstreamMs,
+      proxyTotalMs: proxyTiming.proxyTotalMs,
+    },
   );
 }
 
@@ -287,6 +310,7 @@ async function transcribeViaProxy(
 
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
+  const fetchStartedAt = performance.now();
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: {
@@ -297,7 +321,7 @@ async function transcribeViaProxy(
     signal: options?.signal,
   });
 
-  return parseTranscriptResponse(response, model, options);
+  return parseTranscriptResponse(response, model, options, fetchStartedAt);
 }
 
 async function transcribeViaDirectGroqDev(
@@ -322,6 +346,7 @@ async function transcribeViaDirectGroqDev(
   if (language) form.append("language", language);
   form.append("prompt", prompt);
 
+  const fetchStartedAt = performance.now();
   const response = await fetch(GROQ_TRANSCRIBE_URL, {
     method: "POST",
     headers: {
@@ -331,7 +356,7 @@ async function transcribeViaDirectGroqDev(
     signal: options?.signal,
   });
 
-  return parseTranscriptResponse(response, model, options);
+  return parseTranscriptResponse(response, model, options, fetchStartedAt);
 }
 
 /**

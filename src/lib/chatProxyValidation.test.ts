@@ -71,6 +71,15 @@ describe("validateChatProxyRequest", () => {
     expect(result).toMatchObject({ ok: false, code: "stream_required" });
   });
 
+  it("rejects invalid max_tokens", () => {
+    expect(
+      validateChatProxyRequest({ ...base, max_tokens: 10 }),
+    ).toMatchObject({ ok: false, code: "invalid_max_tokens" });
+    expect(
+      validateChatProxyRequest({ ...base, max_tokens: 4096 }),
+    ).toMatchObject({ ok: true });
+  });
+
   it("rejects too many messages", () => {
     const messages = Array.from({ length: CHAT_PROXY_MAX_MESSAGES + 1 }, () => ({
       role: "user",

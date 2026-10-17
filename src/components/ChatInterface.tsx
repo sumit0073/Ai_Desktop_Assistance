@@ -15,9 +15,11 @@ import { usePinnedChatScroll } from "../hooks/usePinnedChatScroll";
 import { analyzeWithAi, hasMermaidBlock, type ArchitectureDetail } from "../lib/ai";
 import { CHAT_SCROLL_STEP_PX } from "../lib/chatKeyboard";
 import {
-  buildAskAboutConversationPrompt,
-  formatRecentConversationForAi,
+  buildPromptFromSelection,
+  logAskAiDiagnostics,
+  selectAskAiTarget,
 } from "../lib/askAboutConversation";
+import { looksLikeArchitecture } from "../lib/architectureDetect";
 import { decideAskAudienceQuestion } from "../lib/askQuestionFlow";
 import {
   extractAudienceQuestions,
@@ -326,11 +328,12 @@ export function ChatInterface() {
       return;
     }
 
-    const history = askQuiet
-      ? []
-      : messagesRef.current
-          .filter((m) => m.id !== "welcome")
-          .map(toHistoryEntry);
+    // Always send recent thread history so architecture follow-ups
+    // ("What about scalability?") can reference the prior design.
+    // askQuiet only affects UI bubbles / prompt packaging.
+    const history = messagesRef.current
+      .filter((m) => m.id !== "welcome")
+      .map(toHistoryEntry);
 
     const assistantId = crypto.randomUUID();
     setMessages((prev) => {
@@ -491,17 +494,45 @@ export function ChatInterface() {
 
   const askAboutConversation = (extraPrompt?: string) => {
     if (sendingRef.current) return;
-    // Only the last few Them/You turns go to the model — not shown as a chat dump.
-    const transcript = formatRecentConversationForAi(messagesRef.current);
     const note = extraPrompt?.trim();
-    if (!transcript && !note && !pendingRef.current) {
+    const selection = selectAskAiTarget({
+      messages: messagesRef.current.map((m) => ({
+        id: m.id,
+        speaker: m.speaker,
+        content: m.content,
+        streaming: m.streaming,
+      })),
+      note,
+    });
+    if (
+      selection.mode === "empty" &&
+      !note &&
+      !pendingRef.current
+    ) {
       resetView();
       return;
     }
-    const prompt = buildAskAboutConversationPrompt({ note, transcript });
+    const prompt = buildPromptFromSelection(selection);
+    const started = performance.now();
+    logAskAiDiagnostics(selection, {
+      architectureMode: looksLikeArchitecture(prompt),
+      model:
+        (import.meta.env.VITE_GROQ_MODEL as string | undefined)?.trim() ||
+        "openai/gpt-oss-20b",
+    });
     void runAnalysis(prompt, pendingRef.current, {
       skipUserBubble: true,
       askQuiet: true,
+    }).finally(() => {
+      if (import.meta.env.DEV) {
+        logAskAiDiagnostics(selection, {
+          architectureMode: looksLikeArchitecture(prompt),
+          model:
+            (import.meta.env.VITE_GROQ_MODEL as string | undefined)?.trim() ||
+            "openai/gpt-oss-20b",
+          latencyMs: Math.round(performance.now() - started),
+        });
+      }
     });
   };
 
@@ -738,9 +769,19 @@ export function ChatInterface() {
         return next;
       });
     },
-    onSegmentDiscarded: ({ source, utteranceId }) => {
+    onSegmentDiscarded: ({ source, utteranceId, isPartial }) => {
       const live = liveUtteranceRef.current[source];
       if (!live || live.utteranceId !== utteranceId) return;
+      // Empty/hallucinated interim must not lock out the final for this utterance.
+      if (isPartial) {
+        setMessages((prev) => {
+          const next = prev.filter((m) => m.id !== live.messageId);
+          messagesRef.current = next;
+          return next;
+        });
+        liveUtteranceRef.current[source] = undefined;
+        return;
+      }
       setMessages((prev) => {
         const next = prev.filter((m) => m.id !== live.messageId);
         messagesRef.current = next;
@@ -1122,6 +1163,20 @@ export function ChatInterface() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(event) => {
+                // Local fallback when OS global Ctrl/⌘+Enter failed to register
+                // (overlapping tauri:dev instances / hotkey already taken).
+                if (
+                  (event.ctrlKey || event.metaKey) &&
+                  !event.altKey &&
+                  !event.shiftKey &&
+                  event.key === "Enter"
+                ) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  askAboutConversation(input);
+                }
+              }}
               placeholder={
                 voiceListening
                   ? "Listening… speak, then tap the mic to finish"

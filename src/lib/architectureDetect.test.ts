@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   getArchitectureDetail,
   hasMermaidBlock,
+  isArchitectureAspectFollowUp,
+  isArchitectureConceptQuestion,
   isFreshArchitectureTopic,
   looksLikeArchitecture,
 } from "./architectureDetect";
@@ -14,11 +16,36 @@ describe("looksLikeArchitecture", () => {
     expect(looksLikeArchitecture("Show a Mermaid system design for Netflix")).toBe(
       true,
     );
+    expect(
+      looksLikeArchitecture("Design an e-commerce order management system"),
+    ).toBe(true);
   });
 
   it("does not treat ordinary service/database questions as architecture", () => {
     expect(looksLikeArchitecture("Why is my database query slow?")).toBe(false);
     expect(looksLikeArchitecture("Which system service owns billing?")).toBe(
+      false,
+    );
+  });
+
+  it("does not treat HLD/LLD definition questions as architecture generation", () => {
+    expect(isArchitectureConceptQuestion("What is HLD and LLD?")).toBe(true);
+    expect(looksLikeArchitecture("What is HLD and LLD?")).toBe(false);
+    expect(
+      looksLikeArchitecture("What is the difference between HLD and LLD?"),
+    ).toBe(false);
+    expect(looksLikeArchitecture("Explain high-level design vs low-level design")).toBe(
+      false,
+    );
+    expect(getArchitectureDetail("What is HLD and LLD?")).toBe("medium");
+  });
+
+  it("still treats design-for-system phrasing as architecture", () => {
+    expect(looksLikeArchitecture("What is the architecture for Uber?")).toBe(
+      true,
+    );
+    expect(looksLikeArchitecture("Write an HLD for a chat app")).toBe(true);
+    expect(isArchitectureConceptQuestion("What is the architecture for Uber?")).toBe(
       false,
     );
   });
@@ -50,6 +77,21 @@ describe("getArchitectureDetail", () => {
     expect(getArchitectureDetail("show internal services / LLD")).toBe(
       "detailed",
     );
+  });
+});
+
+describe("isArchitectureAspectFollowUp", () => {
+  it("treats scalability questions as aspect follow-ups, not full redesigns", () => {
+    expect(isArchitectureAspectFollowUp("What about scalability?")).toBe(true);
+    expect(looksLikeArchitecture("What about scalability?")).toBe(false);
+  });
+
+  it("does not treat explicit redesign as an aspect follow-up", () => {
+    expect(
+      isArchitectureAspectFollowUp(
+        "Design a full architecture for a scalable e-commerce system",
+      ),
+    ).toBe(false);
   });
 });
 

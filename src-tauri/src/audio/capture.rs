@@ -1,6 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
@@ -123,6 +124,16 @@ fn start_lane(
     let status = Arc::new(Mutex::new(SourceCaptureStatus::Active));
     let stop_thread = Arc::clone(&stop);
     let status_thread = Arc::clone(&status);
+    let lane_started_ms = now_ms_u64();
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[audio-capture] started source={} sample_rate={} channels={} format={:?}",
+            kind.as_str(),
+            sample_rate,
+            channels,
+            sample_format
+        );
+    }
 
     let join = thread::Builder::new()
         .name(format!("seecog-audio-{}", kind.as_str()))
@@ -139,6 +150,7 @@ fn start_lane(
             };
             let segmenter = Arc::new(Mutex::new(SpeechSegmenter::new(kind, detector)));
             let last_fp = Arc::new(Mutex::new(None::<String>));
+            let first_callback_ms = Arc::new(AtomicU64::new(0));
 
             let err_status = Arc::clone(&status_thread);
             let err_fn = move |err: cpal::StreamError| {
@@ -160,6 +172,9 @@ fn start_lane(
                     Arc::clone(&last_fp),
                     Arc::clone(&sink),
                     Arc::clone(&on_reject),
+                    Arc::clone(&first_callback_ms),
+                    kind,
+                    lane_started_ms,
                     err_fn,
                 ),
                 SampleFormat::I16 => build_i16_stream(
@@ -171,6 +186,9 @@ fn start_lane(
                     Arc::clone(&last_fp),
                     Arc::clone(&sink),
                     Arc::clone(&on_reject),
+                    Arc::clone(&first_callback_ms),
+                    kind,
+                    lane_started_ms,
                     err_fn,
                 ),
                 other => {
@@ -224,6 +242,34 @@ fn start_lane(
     })
 }
 
+fn now_ms_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn note_first_audio_callback(
+    first_callback_ms: &AtomicU64,
+    kind: AudioSourceKind,
+    lane_started_ms: u64,
+    pcm16k_len: usize,
+) {
+    if first_callback_ms
+        .compare_exchange(0, now_ms_u64(), Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+        && cfg!(debug_assertions)
+    {
+        let at = first_callback_ms.load(Ordering::SeqCst);
+        eprintln!(
+            "[audio-capture] first_samples source={} warmup_ms={} pcm16k_samples={}",
+            kind.as_str(),
+            at.saturating_sub(lane_started_ms),
+            pcm16k_len
+        );
+    }
+}
+
 fn evidence_payload(ev: &SegmentEvidence) -> SpeechEvidencePayload {
     SpeechEvidencePayload {
         duration_ms: ev.duration_ms,
@@ -268,6 +314,9 @@ fn build_f32_stream(
     last_fp: Arc<Mutex<Option<String>>>,
     sink: SegmentSink,
     on_reject: RejectSink,
+    first_callback_ms: Arc<AtomicU64>,
+    kind: AudioSourceKind,
+    lane_started_ms: u64,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<Stream, SourceCaptureStatus> {
     device
@@ -276,6 +325,12 @@ fn build_f32_stream(
             move |data: &[f32], _| {
                 let mono = to_mono_i16(data, channels);
                 let pcm16k = resample_mono_i16(&mono, sample_rate, 16_000);
+                note_first_audio_callback(
+                    &first_callback_ms,
+                    kind,
+                    lane_started_ms,
+                    pcm16k.len(),
+                );
                 let segments = segmenter.lock().push_pcm(&pcm16k);
                 for seg in segments {
                     emit_if_valid(&seg, &last_fp, &sink, &on_reject);
@@ -299,6 +354,9 @@ fn build_i16_stream(
     last_fp: Arc<Mutex<Option<String>>>,
     sink: SegmentSink,
     on_reject: RejectSink,
+    first_callback_ms: Arc<AtomicU64>,
+    kind: AudioSourceKind,
+    lane_started_ms: u64,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<Stream, SourceCaptureStatus> {
     device
@@ -320,6 +378,12 @@ fn build_i16_stream(
                     out
                 };
                 let pcm16k = resample_mono_i16(&mono, sample_rate, 16_000);
+                note_first_audio_callback(
+                    &first_callback_ms,
+                    kind,
+                    lane_started_ms,
+                    pcm16k.len(),
+                );
                 let segments = segmenter.lock().push_pcm(&pcm16k);
                 for seg in segments {
                     emit_if_valid(&seg, &last_fp, &sink, &on_reject);

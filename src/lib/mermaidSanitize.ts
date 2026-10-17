@@ -277,6 +277,217 @@ export function fixSubgraphLine(line: string): string {
   return `${indent}subgraph ${id}["${display}"]`;
 }
 
+type ArchLayerRank =
+  | "clients"
+  | "api"
+  | "services"
+  | "messaging"
+  | "data"
+  | "external"
+  | "other";
+
+const LAYER_RANK: Record<ArchLayerRank, number> = {
+  clients: 0,
+  api: 1,
+  services: 2,
+  messaging: 3,
+  data: 4,
+  external: 5,
+  other: 6,
+};
+
+const LAYER_DETECT: Array<{ test: RegExp; layer: ArchLayerRank }> = [
+  { test: /client|user|browser|mobile|web\s*app|frontend/i, layer: "clients" },
+  { test: /api|gateway|auth|edge|ingress|load\s*balanc/i, layer: "api" },
+  {
+    test: /messag|async|kafka|queue|event|realtime|real[\s_-]*time|pubsub|broker|stream/i,
+    layer: "messaging",
+  },
+  {
+    test: /data|store|database|cache|redis|storage|postgres|mongo|s3|dynamo/i,
+    layer: "data",
+  },
+  {
+    test: /external|third|partner|saas|vendor|payment|provider|stripe|oauth/i,
+    layer: "external",
+  },
+  {
+    test: /core|service|domain|microservice|micro[\s_-]*service|backend|business/i,
+    layer: "services",
+  },
+];
+
+function detectSubgraphLayer(headerLine: string): ArchLayerRank {
+  for (const rule of LAYER_DETECT) {
+    if (rule.test.test(headerLine)) return rule.layer;
+  }
+  return "other";
+}
+
+function shortenNodeLabel(label: string): string {
+  const cleaned = label
+    .replace(/\s+/g, " ")
+    .replace(/[<>]/g, "")
+    .trim();
+  if (cleaned.length <= 28) return cleaned;
+  // Prefer dropping parenthetical noise first.
+  const noParen = cleaned.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+  if (noParen.length <= 28 && noParen.length >= 3) return noParen;
+  return cleaned.slice(0, 27).trimEnd();
+}
+
+function shortenLabelsInLine(line: string): string {
+  // Prefer specific shapes first so "[[" / "[(" are not eaten by "[".
+  let next = line.replace(
+    /(\b[A-Za-z][\w]*)\[\[([^\]]*)\]\]/g,
+    (_, id: string, body: string) => `${id}[[${shortenNodeLabel(body)}]]`,
+  );
+  next = next.replace(
+    /(\b[A-Za-z][\w]*)\[\(([^)]*)\)\]/g,
+    (_, id: string, body: string) => `${id}[(${shortenNodeLabel(body)})]`,
+  );
+  next = next.replace(
+    /(\b[A-Za-z][\w]*)\[([^\]\n]*)\]/g,
+    (_, id: string, body: string) => `${id}[${shortenNodeLabel(body)}]`,
+  );
+  return next;
+}
+
+function edgeKey(line: string): string | null {
+  const m = line.match(
+    new RegExp(`^\\s*([A-Za-z][\\w]*)\\s*(${EDGE_OP})\\s*(?:\\|[^|]*\\|\\s*)?([A-Za-z][\\w]*)`),
+  );
+  if (!m) return null;
+  return `${m[1]}|${m[2]}|${m[3]}`;
+}
+
+/**
+ * Deterministic layout hygiene after syntax sanitize:
+ * - Reorder top-level subgraphs into Clients → API → Services → Messaging → Data → External
+ * - Deduplicate identical edges
+ * - Shorten overly long node labels
+ * Does not delete unique relationships.
+ */
+export function optimizeMermaidLayout(chart: string): string {
+  const lines = chart.split("\n");
+  if (!lines.length) return chart;
+
+  const header: string[] = [];
+  const preamble: string[] = []; // classDef etc. before first subgraph (rare)
+  type SubBlock = { header: string; body: string[]; layer: ArchLayerRank };
+  const subgraphs: SubBlock[] = [];
+  const trailing: string[] = [];
+
+  let i = 0;
+  // flowchart header
+  if (/^\s*(flowchart|graph)\b/i.test(lines[0] ?? "")) {
+    header.push(lines[0]);
+    i = 1;
+  }
+
+  let depth = 0;
+  let current: SubBlock | null = null;
+
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (/^subgraph\b/i.test(trimmed)) {
+      if (depth === 0) {
+        current = {
+          header: line,
+          body: [],
+          layer: detectSubgraphLayer(line),
+        };
+        subgraphs.push(current);
+        depth = 1;
+        continue;
+      }
+      depth += 1;
+      current?.body.push(line);
+      continue;
+    }
+
+    if (/^end$/i.test(trimmed)) {
+      if (depth > 1) {
+        current?.body.push(line);
+        depth -= 1;
+        continue;
+      }
+      if (depth === 1) {
+        depth = 0;
+        current = null;
+        continue;
+      }
+      trailing.push(line);
+      continue;
+    }
+
+    if (depth >= 1 && current) {
+      current.body.push(shortenLabelsInLine(line));
+      continue;
+    }
+
+    if (subgraphs.length === 0 && depth === 0) {
+      // Between header and first subgraph, or no subgraphs at all.
+      if (/^\s*(flowchart|graph)\b/i.test(trimmed)) {
+        header.push(line);
+      } else {
+        preamble.push(shortenLabelsInLine(line));
+      }
+      continue;
+    }
+
+    trailing.push(shortenLabelsInLine(line));
+  }
+
+  // If we never saw subgraphs, still shorten + dedupe edges on flat charts.
+  if (subgraphs.length === 0) {
+    const flat = [...header, ...preamble, ...trailing]
+      .map((l) => shortenLabelsInLine(l))
+      .filter(Boolean);
+    return dedupeEdgeLines(flat).join("\n").trim();
+  }
+
+  subgraphs.sort((a, b) => {
+    const d = LAYER_RANK[a.layer] - LAYER_RANK[b.layer];
+    if (d !== 0) return d;
+    return 0; // stable enough; preserve relative order via sort stability
+  });
+
+  const out: string[] = [];
+  if (header.length) out.push(...header);
+  else out.push("flowchart TB");
+  out.push(...preamble.filter((l) => l.trim()));
+
+  for (const block of subgraphs) {
+    out.push(block.header);
+    // Ensure direction LR is first useful line inside subgraph.
+    const body = block.body.filter((l) => !/^\s*direction\s+\w+/i.test(l));
+    const indent = (block.header.match(/^\s*/)?.[0] ?? "") + "  ";
+    out.push(`${indent}direction LR`);
+    out.push(...body);
+    out.push(`${block.header.match(/^\s*/)?.[0] ?? ""}end`);
+  }
+
+  out.push(...dedupeEdgeLines(trailing.filter((l) => l.trim())));
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function dedupeEdgeLines(lines: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of lines) {
+    const key = edgeKey(line);
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(line);
+  }
+  return out;
+}
+
 /**
  * Repair common LLM Mermaid mistakes so flowcharts actually parse.
  */
@@ -376,7 +587,8 @@ export function sanitizeMermaidChart(chart: string): string {
     out.push(...insertMissingArrows(line));
   }
 
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const joined = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return optimizeMermaidLayout(joined);
 }
 
 /**

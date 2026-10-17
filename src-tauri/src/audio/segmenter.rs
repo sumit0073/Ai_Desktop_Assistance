@@ -9,13 +9,21 @@ use super::vad::{
 };
 
 /// Keep this much audio before speech onset (ms).
-const PRE_ROLL_MS: u32 = 280;
-/// Require this much trailing silence before ending a segment (ms).
-const END_SILENCE_MS: u32 = 420;
+/// Aggressive WebRTC VAD often lags 300–500ms on soft onsets ("What"/"How"/"Can");
+/// 280ms was shorter than that lag, so leading phones were clipped from STT.
+const PRE_ROLL_MS: u32 = 500;
+/// Trailing silence before end-of-speech finalization (ms).
+const END_SILENCE_MS: u32 = 280;
 /// Ignore noise bursts shorter than this (ms).
 const MIN_SPEECH_MS: u32 = 360;
-/// While speech continues, emit growing-window partials this often (ms).
-const PARTIAL_EMIT_MS: u32 = 1_500;
+/// Growing-window interim emit interval after the first partial (ms).
+const PARTIAL_EMIT_MS: u32 = 700;
+/// Delay the *first* interim until we have this much post-onset speech (ms).
+/// Early 700ms partials were mid-word clips that Whisper mangled ("And LLD").
+const FIRST_PARTIAL_MIN_SPEECH_MS: u32 = 1_100;
+/// Consecutive audible frames that may start a segment before VAD agrees (~80ms).
+/// Captures unvoiced leading consonants that Aggressive VAD misses.
+const SOFT_ONSET_AUDIBLE_FRAMES: usize = 4;
 /// Cap a single segment so STT requests stay bounded (ms).
 const MAX_SPEECH_MS: u32 = 12_000;
 /// Max PCM held while idle / in segment (~20s @ 16 kHz).
@@ -56,6 +64,10 @@ pub struct SpeechSegmenter<D: VoiceDetector> {
     in_speech: bool,
     speech_frames: usize,
     silence_frames: usize,
+    /// Consecutive audible frames while idle (soft onset for unvoiced starts).
+    onset_audible_run: usize,
+    /// True after at least one partial was emitted for this utterance.
+    emitted_partial: bool,
     segment_start_ms: u64,
     utterance_id: String,
     /// `speech_frames` value when the last partial was emitted.
@@ -65,6 +77,11 @@ pub struct SpeechSegmenter<D: VoiceDetector> {
     min_speech_frames: usize,
     max_speech_frames: usize,
     partial_interval_frames: usize,
+    first_partial_min_frames: usize,
+    soft_onset_frames: usize,
+    /// Dev diagnostics — first audio / first onset (privacy-safe counters only).
+    frames_seen: u64,
+    onset_logged: bool,
 }
 
 impl<D: VoiceDetector> SpeechSegmenter<D> {
@@ -77,6 +94,8 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
             in_speech: false,
             speech_frames: 0,
             silence_frames: 0,
+            onset_audible_run: 0,
+            emitted_partial: false,
             segment_start_ms: 0,
             utterance_id: String::new(),
             last_partial_speech_frames: 0,
@@ -85,6 +104,10 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
             min_speech_frames: ms_to_frames(MIN_SPEECH_MS),
             max_speech_frames: ms_to_frames(MAX_SPEECH_MS),
             partial_interval_frames: ms_to_frames(PARTIAL_EMIT_MS),
+            first_partial_min_frames: ms_to_frames(FIRST_PARTIAL_MIN_SPEECH_MS),
+            soft_onset_frames: SOFT_ONSET_AUDIBLE_FRAMES,
+            frames_seen: 0,
+            onset_logged: false,
         }
     }
 
@@ -102,6 +125,7 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
 
     fn push_frame(&mut self, frame: &[i16]) -> Vec<FinalizedSegment> {
         let mut out = Vec::new();
+        self.frames_seen = self.frames_seen.saturating_add(1);
 
         // Bound memory while idle.
         while self.pcm.len() > MAX_BUFFER_SAMPLES {
@@ -110,30 +134,60 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
 
         let vad_speech = self.detector.is_speech(frame);
         let audible = is_audible_frame(frame);
+        // While speaking, keep the strict gate so end-silence stays reliable.
         let speech = vad_speech && audible;
 
         if !self.in_speech {
-            // Keep pre-roll window.
+            // Keep pre-roll window (includes soft leading consonants).
             self.pcm.extend(frame.iter().copied());
             let max_pre = self.pre_roll_frames * VAD_FRAME_SAMPLES;
             while self.pcm.len() > max_pre {
                 self.pcm.pop_front();
             }
 
-            if speech {
+            if audible {
+                self.onset_audible_run = self.onset_audible_run.saturating_add(1);
+            } else {
+                self.onset_audible_run = 0;
+            }
+
+            // Soft onset: energy-only run catches "Wh"/"H"/"C" before VAD vowels.
+            let soft_onset = self.onset_audible_run >= self.soft_onset_frames;
+            let trigger = speech || soft_onset;
+
+            if trigger {
+                let preroll_samples = self.pcm.len();
                 self.in_speech = true;
                 self.speech_frames = 1;
                 self.silence_frames = 0;
+                self.emitted_partial = false;
                 self.last_partial_speech_frames = 0;
+                self.onset_audible_run = 0;
                 self.utterance_id = Uuid::new_v4().to_string();
                 self.segment_start_ms = now_ms().saturating_sub(PRE_ROLL_MS as u64);
+                if !self.onset_logged {
+                    self.onset_logged = true;
+                    if cfg!(debug_assertions) {
+                        eprintln!(
+                            "[audio-onset] source={} soft={} vad={} preroll_samples={} frames_before_onset={} utterance={}",
+                            self.source.as_str(),
+                            soft_onset && !speech,
+                            speech,
+                            preroll_samples,
+                            self.frames_seen,
+                            &self.utterance_id.get(..8).unwrap_or(&self.utterance_id)
+                        );
+                    }
+                }
             }
             return out;
         }
 
         // In speech: append everything (including short pauses).
         self.pcm.extend(frame.iter().copied());
-        if speech {
+        if speech || audible {
+            // Count audible frames toward speech so soft consonants mid-phrase
+            // do not immediately accumulate end-silence.
             self.speech_frames += 1;
             self.silence_frames = 0;
         } else {
@@ -160,10 +214,14 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
         if self.speech_frames < self.min_speech_frames {
             return None;
         }
+        // Hold the first interim until we have enough post-onset audio.
+        if !self.emitted_partial && self.speech_frames < self.first_partial_min_frames {
+            return None;
+        }
         let since_last = self
             .speech_frames
             .saturating_sub(self.last_partial_speech_frames);
-        if since_last < self.partial_interval_frames {
+        if self.emitted_partial && since_last < self.partial_interval_frames {
             return None;
         }
 
@@ -173,6 +231,16 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
         }
 
         self.last_partial_speech_frames = self.speech_frames;
+        self.emitted_partial = true;
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "[audio-partial] source={} speech_frames={} pcm_samples={} utterance={}",
+                self.source.as_str(),
+                self.speech_frames,
+                pcm.len(),
+                &self.utterance_id.get(..8).unwrap_or(&self.utterance_id)
+            );
+        }
         Some(FinalizedSegment {
             source: self.source,
             pcm_i16: pcm,
@@ -187,6 +255,7 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
     fn finalize_current(&mut self, trim_trailing_silence: bool) -> Option<FinalizedSegment> {
         let speech_ok = self.speech_frames >= self.min_speech_frames;
         let utterance_id = self.utterance_id.clone();
+        let speech_frames = self.speech_frames;
         let mut pcm: Vec<i16> = self.pcm.drain(..).collect();
 
         if trim_trailing_silence {
@@ -199,6 +268,8 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
         self.in_speech = false;
         self.speech_frames = 0;
         self.silence_frames = 0;
+        self.onset_audible_run = 0;
+        self.emitted_partial = false;
         self.last_partial_speech_frames = 0;
         self.utterance_id.clear();
         self.leftover.clear();
@@ -210,6 +281,16 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
         // Final energy check on the whole segment.
         if !segment_has_energy(&pcm) {
             return None;
+        }
+
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "[audio-final] source={} speech_frames={} pcm_samples={} utterance={}",
+                self.source.as_str(),
+                speech_frames,
+                pcm.len(),
+                utterance_id.get(..8).unwrap_or(&utterance_id)
+            );
         }
 
         Some(FinalizedSegment {
@@ -230,6 +311,7 @@ impl<D: VoiceDetector> SpeechSegmenter<D> {
         } else {
             self.pcm.clear();
             self.leftover.clear();
+            self.onset_audible_run = 0;
             None
         }
     }
@@ -340,9 +422,9 @@ mod tests {
 
     #[test]
     fn long_speech_emits_partial_then_final() {
-        // ~3.2s speech → at least one partial (~1.5s), then silence → final.
+        // ~3.2s speech → first partial after ~1100ms, then silence → final.
         let speech_frames = 160; // 3200ms
-        let silence_frames = 30; // 600ms
+        let silence_frames = 20; // 400ms (> END_SILENCE_MS 280)
         let mut decisions = VecDeque::new();
         for _ in 0..speech_frames {
             decisions.push_back(true);
@@ -368,6 +450,137 @@ mod tests {
         assert!(!final_seg.is_partial);
         let utterance = &final_seg.utterance_id;
         assert!(out.iter().all(|s| s.utterance_id == *utterance));
+    }
+
+    #[test]
+    fn first_partial_waits_for_1100ms_of_speech() {
+        // 800ms speech — below FIRST_PARTIAL_MIN — must not emit interim yet.
+        let speech_frames = 40; // 800ms
+        let mut decisions = VecDeque::new();
+        for _ in 0..speech_frames {
+            decisions.push_back(true);
+        }
+        let mut seg = SpeechSegmenter::new(
+            AudioSourceKind::Meeting,
+            ScriptedVad { decisions },
+        );
+        let mut pcm = Vec::new();
+        for _ in 0..speech_frames {
+            pcm.extend(loud_frame());
+        }
+        let out = seg.push_pcm(&pcm);
+        assert!(
+            out.is_empty(),
+            "first interim must wait ~1100ms, got {} emits",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn first_partial_emits_after_1100ms() {
+        let speech_frames = 60; // 1200ms
+        let mut decisions = VecDeque::new();
+        for _ in 0..speech_frames {
+            decisions.push_back(true);
+        }
+        let mut seg = SpeechSegmenter::new(
+            AudioSourceKind::Meeting,
+            ScriptedVad { decisions },
+        );
+        let mut pcm = Vec::new();
+        for _ in 0..speech_frames {
+            pcm.extend(loud_frame());
+        }
+        let out = seg.push_pcm(&pcm);
+        assert!(
+            out.iter().any(|s| s.is_partial),
+            "expected interim after ~1100ms"
+        );
+        assert!(out.iter().all(|s| s.is_partial));
+    }
+
+    #[test]
+    fn late_vad_onset_still_keeps_leading_loud_preroll() {
+        // Simulate Aggressive VAD: first 20 frames (400ms) loud but VAD=false,
+        // then VAD=true. Soft onset should start earlier; final must include
+        // leading loud samples (not drop the "What…" head).
+        let late_vad = 20usize;
+        let speech_after = 30usize; // 600ms
+        let silence = 20usize;
+        let mut decisions = VecDeque::new();
+        for _ in 0..late_vad {
+            decisions.push_back(false);
+        }
+        for _ in 0..speech_after {
+            decisions.push_back(true);
+        }
+        for _ in 0..silence {
+            decisions.push_back(false);
+        }
+        let mut seg = SpeechSegmenter::new(
+            AudioSourceKind::Microphone,
+            ScriptedVad { decisions },
+        );
+        let mut pcm = Vec::new();
+        for _ in 0..(late_vad + speech_after) {
+            pcm.extend(loud_frame());
+        }
+        for _ in 0..silence {
+            pcm.extend(silent_frame());
+        }
+        let out = seg.push_pcm(&pcm);
+        let final_seg = out
+            .iter()
+            .find(|s| !s.is_partial)
+            .expect("expected a finalized segment");
+        // Soft onset at ~80ms + preroll policy: far more than speech_after alone.
+        let min_expected = VAD_FRAME_SAMPLES * (speech_after + 10);
+        assert!(
+            final_seg.pcm_i16.len() >= min_expected,
+            "leading loud frames must be retained (got {} samples, want >= {})",
+            final_seg.pcm_i16.len(),
+            min_expected
+        );
+        // Leading samples should still be loud (not silence-padded).
+        let head_rms = {
+            let head = &final_seg.pcm_i16[..VAD_FRAME_SAMPLES];
+            let sum_sq: f64 = head.iter().map(|s| {
+                let x = *s as f64;
+                x * x
+            }).sum();
+            (sum_sq / head.len() as f64).sqrt()
+        };
+        assert!(
+            head_rms > 1000.0,
+            "segment head should be loud speech retained from pre-VAD audio, rms={head_rms}"
+        );
+    }
+
+    #[test]
+    fn soft_onset_starts_without_vad() {
+        // Pure audible run, VAD always false — soft onset must still open speech
+        // and finalize after end silence.
+        let audible = 25usize; // 500ms
+        let silence = 20usize;
+        let decisions: VecDeque<bool> = std::iter::repeat(false)
+            .take(audible + silence)
+            .collect();
+        let mut seg = SpeechSegmenter::new(
+            AudioSourceKind::Microphone,
+            ScriptedVad { decisions },
+        );
+        let mut pcm = Vec::new();
+        for _ in 0..audible {
+            pcm.extend(loud_frame());
+        }
+        for _ in 0..silence {
+            pcm.extend(silent_frame());
+        }
+        let out = seg.push_pcm(&pcm);
+        assert!(
+            out.iter().any(|s| !s.is_partial),
+            "soft-onset utterance must finalize without VAD"
+        );
     }
 
     #[test]

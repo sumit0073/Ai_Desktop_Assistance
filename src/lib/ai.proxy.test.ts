@@ -75,11 +75,66 @@ describe("analyzeWithAi proxy routing", () => {
       stream: boolean;
       model: string;
       messages: unknown[];
+      max_tokens?: number;
     };
     expect(body.stream).toBe(true);
     expect(body.model).toBeTruthy();
     expect(Array.isArray(body.messages)).toBe(true);
+    expect(body.max_tokens).toBeGreaterThanOrEqual(2048);
     expect(String(url)).not.toContain("api.groq.com");
+  });
+
+  it("requests a higher max_tokens budget for architecture generation", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        sseResponse(
+          "# Architecture: Shop\n\n## Overview\nComplete.\n\n```mermaid\nflowchart TB\nA-->B\n```\n\n## Major Components\n| Component | Responsibility |\n|---|---|\n| API | Entry |\n\n## Database and Storage Strategy\n| Store | Type | What it holds | Why |\n|---|---|---|---|\n| DB | SQL | Orders | Source of truth |\n\n## Key Workflows\n1. Place order.\n\n## Scalability and reliability\nHorizontal scale.\n\n## Assumptions and trade-offs\nSingle region.",
+        ),
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await analyzeWithAi({
+      prompt: "Design an e-commerce order management system",
+    });
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]![1] as RequestInit).body),
+    ) as { max_tokens?: number };
+    expect(body.max_tokens).toBeGreaterThanOrEqual(4096);
+  });
+
+  it("does not force full architecture mode for scalability follow-ups", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        sseResponse(
+          "Scale the order service horizontally behind a load balancer and shard the orders DB by customer id.",
+        ),
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await analyzeWithAi({
+      prompt: "What about scalability?",
+      history: [
+        {
+          role: "assistant",
+          content:
+            "# Architecture: Orders\n```mermaid\nflowchart TB\nA-->B\n```\nDone.",
+        },
+      ],
+    });
+
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[0]![1] as RequestInit).body),
+    ) as {
+      max_tokens?: number;
+      messages: Array<{ role: string; content: string }>;
+    };
+    const system = body.messages.find((m) => m.role === "system")?.content ?? "";
+    expect(system).toMatch(/Answer ONLY the user's follow-up aspect/i);
+    expect(system).not.toMatch(/Output order \(architecture responses only\)/i);
+    expect(body.max_tokens).toBe(2048);
   });
 
   it("rejects missing auth session for proxy path", async () => {

@@ -9,6 +9,7 @@ export type StreamDelta = {
       content?: string | null;
       reasoning?: string | null;
     };
+    finish_reason?: string | null;
   }>;
 };
 
@@ -27,4 +28,13 @@ export function extractStreamDeltaText(json: StreamDelta): string {
     if (typeof part === "string" && part.length > 0) return part;
   }
   return "";
+}
+
+/** Last non-null finish_reason from a chunk (stop | length | …). */
+export function extractStreamFinishReason(
+  json: StreamDelta,
+): string | null {
+  const reason = json.choices?.[0]?.finish_reason;
+  if (typeof reason === "string" && reason.trim()) return reason.trim();
+  return null;
 }

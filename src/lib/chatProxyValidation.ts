@@ -18,6 +18,10 @@ export const CHAT_PROXY_RATE_LIMIT_WINDOW_MS = 60_000;
 export const CHAT_PROXY_RATE_LIMIT_MAX = 40;
 export const CHAT_PROXY_MIN_TEMPERATURE = 0;
 export const CHAT_PROXY_MAX_TEMPERATURE = 1;
+/** Completion budget forwarded to Groq (architecture needs higher). */
+export const CHAT_PROXY_MIN_MAX_TOKENS = 256;
+export const CHAT_PROXY_MAX_MAX_TOKENS = 8192;
+export const CHAT_PROXY_DEFAULT_MAX_TOKENS = 2048;
 
 export type ChatProxyRole = "system" | "user" | "assistant";
 
@@ -41,6 +45,7 @@ export type ChatProxyValidationErrorCode =
   | "unsupported_image"
   | "unsupported_model"
   | "invalid_temperature"
+  | "invalid_max_tokens"
   | "stream_required"
   | "rate_limited";
 
@@ -54,11 +59,34 @@ function isDataImageUrl(url: string): boolean {
   return /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(url);
 }
 
+export function validateMaxTokens(value: unknown): {
+  ok: true;
+  maxTokens: number;
+} | { ok: false; message: string } {
+  if (value === undefined || value === null) {
+    return { ok: true, maxTokens: CHAT_PROXY_DEFAULT_MAX_TOKENS };
+  }
+  const n = Number(value);
+  if (
+    !Number.isFinite(n) ||
+    !Number.isInteger(n) ||
+    n < CHAT_PROXY_MIN_MAX_TOKENS ||
+    n > CHAT_PROXY_MAX_MAX_TOKENS
+  ) {
+    return {
+      ok: false,
+      message: `max_tokens must be an integer between ${CHAT_PROXY_MIN_MAX_TOKENS} and ${CHAT_PROXY_MAX_MAX_TOKENS}.`,
+    };
+  }
+  return { ok: true, maxTokens: n };
+}
+
 export function validateChatProxyRequest(input: {
   messages: unknown;
   model: unknown;
   temperature?: unknown;
   stream?: unknown;
+  max_tokens?: unknown;
 }): ChatProxyValidationResult {
   // Client always sends stream:true; reject explicit false. Omitted is OK.
   if (input.stream === false) {
@@ -66,6 +94,15 @@ export function validateChatProxyRequest(input: {
       ok: false,
       code: "stream_required",
       message: "Only streaming chat completions are supported.",
+    };
+  }
+
+  const maxTok = validateMaxTokens(input.max_tokens);
+  if (!maxTok.ok) {
+    return {
+      ok: false,
+      code: "invalid_max_tokens",
+      message: maxTok.message,
     };
   }
 

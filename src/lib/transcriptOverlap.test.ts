@@ -5,6 +5,29 @@ import {
 } from "./transcriptOverlap";
 
 describe("reconcileSegmentOverlap", () => {
+  it("does not strip a full question that only shares a short tail with a clipped interim", () => {
+    // Live UI replaces same-utterance text; if a *new* segment arrived with
+    // these texts, short overlap (<4 words) must not corrupt the full question.
+    const result = reconcileSegmentOverlap(
+      {
+        text: "And LLD.",
+        source: "microphone",
+        sessionId: "s1",
+        startedAtMs: 0,
+        endedAtMs: 900,
+      },
+      {
+        text: "What is HLD and LLD?",
+        source: "microphone",
+        sessionId: "s1",
+        startedAtMs: 0,
+        endedAtMs: 2200,
+      },
+    );
+    expect(result.reason).toBe("insufficient_overlap");
+    expect(result.text).toBe("What is HLD and LLD?");
+  });
+
   it("trims overlapping prefix when same source, session, and timing abut", () => {
     const result = reconcileSegmentOverlap(
       {

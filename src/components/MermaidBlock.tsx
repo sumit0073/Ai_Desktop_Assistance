@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -12,6 +13,17 @@ import {
   sanitizeMermaidChart,
   validateMermaidStructure,
 } from "../lib/mermaidSanitize";
+import {
+  clampZoom,
+  computeActualSizeZoom,
+  computeExpandInitialZoom,
+  computeFitScale,
+  computeInlineScale,
+  effectiveScalePercent,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  ZOOM_STEP,
+} from "../lib/mermaidViewerScale";
 
 type Props = {
   chart: string;
@@ -39,17 +51,11 @@ const MERMAID_SOURCES = [
 
 let mermaidPromise: Promise<MermaidApi> | null = null;
 let activeTheme: "dark" | "default" | null = null;
+let activeLayoutRev = 0;
 let renderSeq = 0;
 
-/** Relative zoom in expand mode: 1 = 100% = fitted to the overlay. */
-const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 3;
-const ZOOM_STEP = 0.15;
-const MIN_FIT_SCALE = 0.25;
-/** Cap inline diagram width so chat stays readable; height follows. */
-const INLINE_MAX_WIDTH = 960;
-/** Allow slight upscale so small stacks fill the chat column. */
-const INLINE_MAX_SCALE = 1.2;
+/** Bump to force Mermaid re-init when flowchart layout knobs change. */
+const MERMAID_LAYOUT_REV = 2;
 
 type ArchLayer =
   | "clients"
@@ -139,12 +145,12 @@ async function loadMermaid(): Promise<MermaidApi> {
 }
 
 /**
- * Dagre ships in the UMD bundle. ELK needs @mermaid-js/layout-elk and is not
- * available here — use generous dagre spacing for ChatGPT-like clarity.
+ * Dagre ships in the UMD bundle. Tight, even spacing + polyline edges reduce
+ * empty cluster stretch and swoopy crossings vs basis curves.
  */
 function applyTheme(api: MermaidApi) {
   const theme = readAppTheme();
-  if (activeTheme === theme) return;
+  if (activeTheme === theme && activeLayoutRev === MERMAID_LAYOUT_REV) return;
 
   const dark = theme === "dark";
   api.initialize({
@@ -154,13 +160,12 @@ function applyTheme(api: MermaidApi) {
     fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
     flowchart: {
       htmlLabels: true,
-      curve: "basis",
-      // Room for full labels (API Gateway, Matching Service) — avoid clipped text.
-      padding: 28,
-      nodeSpacing: 48,
-      rankSpacing: 72,
-      diagramPadding: 24,
-      wrappingWidth: 280,
+      curve: "linear",
+      padding: 16,
+      nodeSpacing: 36,
+      rankSpacing: 52,
+      diagramPadding: 16,
+      wrappingWidth: 160,
       useMaxWidth: false,
       defaultRenderer: "dagre-wrapper",
     },
@@ -183,6 +188,7 @@ function applyTheme(api: MermaidApi) {
     },
   });
   activeTheme = theme;
+  activeLayoutRev = MERMAID_LAYOUT_REV;
 }
 
 async function getMermaid(): Promise<MermaidApi> {
@@ -454,37 +460,6 @@ function enhanceRenderedSvg(root: HTMLElement, chartSource: string) {
   fitLabelBoxes(svg);
 }
 
-function clampZoom(n: number): number {
-  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, n));
-}
-
-function computeFitScale(
-  viewport: HTMLDivElement | null,
-  natural: { w: number; h: number },
-): number {
-  const { w, h } = natural;
-  if (!viewport || !w || !h) return 1;
-  const next = Math.min(
-    (viewport.clientWidth - 48) / w,
-    (viewport.clientHeight - 48) / h,
-  );
-  return Math.max(MIN_FIT_SCALE, next);
-}
-
-/** Scale diagram to fill available chat width; never crop or scroll inline. */
-function computeInlineScale(
-  host: HTMLElement | null,
-  natural: { w: number; h: number },
-): number {
-  const { w } = natural;
-  if (!w) return 1;
-  const available = Math.min(
-    INLINE_MAX_WIDTH,
-    Math.max(200, (host?.clientWidth ?? INLINE_MAX_WIDTH) - 28),
-  );
-  return Math.min(INLINE_MAX_SCALE, Math.max(0.4, available / w));
-}
-
 export function MermaidBlock({ chart }: Props) {
   const reactId = useId().replace(/[^a-zA-Z]/g, "") || "x";
   const [svg, setSvg] = useState<string | null>(null);
@@ -625,10 +600,11 @@ export function MermaidBlock({ chart }: Props) {
       if (cancelled) return;
       const size = measureAndEnhance(inlineCanvasRef.current);
       if (!size) return;
-      const nextScale = computeInlineScale(inlineHostRef.current, size);
+      const hostW = inlineHostRef.current?.clientWidth ?? 0;
+      const nextScale = computeInlineScale(hostW, size);
       inlineScaleRef.current = nextScale;
       setInlineScale(nextScale);
-      hostWidthRef.current = inlineHostRef.current?.clientWidth ?? 0;
+      hostWidthRef.current = hostW;
       setRendering(false);
       setPainted(true);
       // Second frame so layout/scale apply before the wipe starts.
@@ -657,7 +633,7 @@ export function MermaidBlock({ chart }: Props) {
         const w = host.clientWidth;
         if (Math.abs(w - hostWidthRef.current) < 2) return;
         hostWidthRef.current = w;
-        const next = computeInlineScale(host, naturalRef.current);
+        const next = computeInlineScale(w, naturalRef.current);
         if (Math.abs(next - inlineScaleRef.current) < 0.02) return;
         inlineScaleRef.current = next;
         setInlineScale(next);
@@ -671,39 +647,68 @@ export function MermaidBlock({ chart }: Props) {
     };
   }, [expanded, natural.w]);
 
-  /** Expand: fit to overlay, then allow zoom/pan. */
+  const centerExpandedDiagram = useCallback(() => {
+    const vp = expandViewportRef.current;
+    if (!vp) return;
+    const canvas = vp.querySelector(
+      ".arch-viewer__canvas",
+    ) as HTMLElement | null;
+    if (!canvas) return;
+    vp.scrollLeft = Math.max(0, (canvas.scrollWidth - vp.clientWidth) / 2);
+    vp.scrollTop = Math.max(0, (canvas.scrollHeight - vp.clientHeight) / 2);
+  }, []);
+
+  /** Expand: readable initial zoom (not crushed fit), then pan/zoom. */
   useEffect(() => {
     if (!svg || !expanded) return;
+    let cancelled = false;
     const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
       const size = measureAndEnhance(expandCanvasRef.current);
       if (!size) return;
       const viewport = expandViewportRef.current;
       const nextFit = computeFitScale(viewport, size);
+      const initialZoom = computeExpandInitialZoom(nextFit);
       fitScaleRef.current = nextFit;
       setFitScale(nextFit);
-      zoomRef.current = 1;
-      setZoom(1);
-      if (viewport) {
-        viewport.scrollLeft = 0;
-        viewport.scrollTop = 0;
-      }
+      zoomRef.current = initialZoom;
+      setZoom(initialZoom);
+      requestAnimationFrame(() => {
+        if (!cancelled) centerExpandedDiagram();
+      });
     });
-    return () => cancelAnimationFrame(frame);
-  }, [svg, expanded, measureAndEnhance]);
-
-  useEffect(() => {
-    if (!expanded) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false);
-    };
-    window.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
+      cancelled = true;
+      cancelAnimationFrame(frame);
     };
-  }, [expanded]);
+  }, [svg, expanded, measureAndEnhance, centerExpandedDiagram]);
+
+  /** Keep expand fit scale fresh when the overlay is resized. */
+  useEffect(() => {
+    if (!expanded || !natural.w) return;
+    const vp = expandViewportRef.current;
+    if (!vp || typeof ResizeObserver === "undefined") return;
+    let timer = 0;
+    const ro = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const nextFit = computeFitScale(vp, naturalRef.current);
+        if (Math.abs(nextFit - fitScaleRef.current) < 0.01) return;
+        const prevEff = fitScaleRef.current * zoomRef.current;
+        fitScaleRef.current = nextFit;
+        setFitScale(nextFit);
+        // Preserve absolute scale when the viewport changes.
+        const nextZoom = clampZoom(prevEff / nextFit);
+        zoomRef.current = nextZoom;
+        setZoom(nextZoom);
+      }, 80);
+    });
+    ro.observe(vp);
+    return () => {
+      window.clearTimeout(timer);
+      ro.disconnect();
+    };
+  }, [expanded, natural.w]);
 
   const zoomAroundCenter = useCallback((nextZoom: number) => {
     const vp = expandViewportRef.current;
@@ -724,6 +729,59 @@ export function MermaidBlock({ chart }: Props) {
       vp.scrollTop = cy * ratio - vp.clientHeight / 2;
     });
   }, []);
+
+  const fitToScreen = useCallback(() => {
+    zoomRef.current = 1;
+    setZoom(1);
+    requestAnimationFrame(() => centerExpandedDiagram());
+  }, [centerExpandedDiagram]);
+
+  const resetReadableZoom = useCallback(() => {
+    const next = computeExpandInitialZoom(fitScaleRef.current);
+    zoomAroundCenter(next);
+    requestAnimationFrame(() => centerExpandedDiagram());
+  }, [zoomAroundCenter, centerExpandedDiagram]);
+
+  const zoomToActualSize = useCallback(() => {
+    zoomAroundCenter(computeActualSizeZoom(fitScaleRef.current));
+  }, [zoomAroundCenter]);
+
+  const onWheelZoom = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      // Ctrl/Cmd/Alt+wheel zooms; plain wheel scrolls the viewport.
+      if (!(event.ctrlKey || event.metaKey || event.altKey)) return;
+      event.preventDefault();
+      const delta = event.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+      zoomAroundCenter(zoomRef.current + delta);
+    },
+    [zoomAroundCenter],
+  );
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+      if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        zoomAroundCenter(zoomRef.current + ZOOM_STEP);
+      }
+      if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        zoomAroundCenter(zoomRef.current - ZOOM_STEP);
+      }
+      if (event.key === "0" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        fitToScreen();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [expanded, zoomAroundCenter, fitToScreen]);
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -784,6 +842,7 @@ export function MermaidBlock({ chart }: Props) {
                   onClick={() => zoomAroundCenter(zoomRef.current + ZOOM_STEP)}
                   title="Zoom in"
                   aria-label="Zoom in"
+                  disabled={zoom >= MAX_ZOOM}
                 >
                   +
                 </button>
@@ -792,8 +851,33 @@ export function MermaidBlock({ chart }: Props) {
                   onClick={() => zoomAroundCenter(zoomRef.current - ZOOM_STEP)}
                   title="Zoom out"
                   aria-label="Zoom out"
+                  disabled={zoom <= MIN_ZOOM}
                 >
                   −
+                </button>
+                <button
+                  type="button"
+                  onClick={fitToScreen}
+                  title="Fit diagram to screen"
+                  aria-label="Fit to screen"
+                >
+                  Fit
+                </button>
+                <button
+                  type="button"
+                  onClick={resetReadableZoom}
+                  title="Reset to readable zoom"
+                  aria-label="Reset zoom"
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={zoomToActualSize}
+                  title="Show diagram at 100% size"
+                  aria-label="Actual size"
+                >
+                  100%
                 </button>
                 <button
                   type="button"
@@ -804,7 +888,7 @@ export function MermaidBlock({ chart }: Props) {
                   Close
                 </button>
                 <span className="arch-viewer__zoom" aria-live="polite">
-                  {Math.round(zoom * 100)}%
+                  {effectiveScalePercent(fitScale, zoom)}%
                 </span>
               </div>
 
@@ -815,6 +899,7 @@ export function MermaidBlock({ chart }: Props) {
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
                 onPointerCancel={onPointerUp}
+                onWheel={onWheelZoom}
               >
                 <div
                   className="arch-viewer__canvas"
@@ -837,7 +922,8 @@ export function MermaidBlock({ chart }: Props) {
                 </div>
               </div>
               <p className="arch-viewer__hint">
-                Drag to pan · Zoom with + / − · Esc to close
+                Drag to pan · Ctrl+scroll to zoom · Fit / Reset / 100% · Esc to
+                close
               </p>
             </div>
           </div>,
