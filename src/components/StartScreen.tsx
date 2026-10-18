@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MicLevelMeter } from "./MicLevelMeter";
+import { MicPermissionHelp } from "./MicPermissionHelp";
 import { ProfileMenu } from "./ProfileMenu";
 import { StartInAppModal } from "./StartInAppModal";
 import { ThemeToggle } from "./ThemeToggle";
@@ -15,7 +16,7 @@ import {
   listEndedAppSessions,
   type AppSessionRow,
 } from "../lib/appSessions";
-import { isMacPlatform } from "../lib/chatKeyboard";
+import { isMacBuild } from "../lib/platform";
 import {
   formatSessionDate,
   formatSessionDuration,
@@ -90,7 +91,9 @@ async function openMicForCheck(): Promise<MicOpenResult> {
       ok: false,
       state: {
         status: "error",
-        message: "Could not open the microphone. Check system privacy settings.",
+        message: isMacBuild()
+          ? "Could not open the microphone. Allow System Bunny in Mac System Settings → Privacy & Security → Microphone."
+          : "Could not open the microphone. Allow access in Windows Settings → Privacy & security → Microphone.",
       },
     };
   }
@@ -108,7 +111,7 @@ export function StartScreen() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const micLevel = useMicInputLevel(micStream);
 
-  const isMac = isMacPlatform();
+  const isMac = isMacBuild();
   const shortcutRows = getAppShortcutRows(isMac);
   const platformLabel = appShortcutPlatformLabel(isMac);
 
@@ -346,12 +349,7 @@ export function StartScreen() {
               </p>
             </div>
           )}
-          {mic.status === "denied" && (
-            <p className="start-modal__warn" role="alert">
-              Permission denied. Allow the microphone for System Bunny in system
-              settings, then try Check mic again.
-            </p>
-          )}
+          {mic.status === "denied" && <MicPermissionHelp />}
           {mic.status === "error" && (
             <p className="start-modal__warn" role="alert">
               {mic.message}

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;
+use tauri::webview::{PermissionKind, PermissionResponse};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use xcap::Monitor;
@@ -528,6 +529,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(MeetingCaptureState::default())
+        // Check mic uses getUserMedia in the webview. Auto-allow the webview's
+        // microphone permission so Win WebView2 / macOS WKWebView don't add a
+        // second silent deny layer. OS privacy (Windows Settings / macOS TCC)
+        // still applies for actual device access.
+        .on_permission_request(|_webview, kind| match kind {
+            PermissionKind::Microphone => PermissionResponse::Allow,
+            _ => PermissionResponse::Default,
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(

@@ -1,12 +1,12 @@
-import { isMacPlatform } from "./chatKeyboard";
+import { isMacBuild } from "./platform";
 
 export type AppShortcutRow = {
   keys: string;
   action: string;
 };
 
-/** Platform-specific chords only — Windows builds show Ctrl, Mac builds show ⌘. */
-export function getAppShortcutRows(isMac = isMacPlatform()): AppShortcutRow[] {
+/** Platform-specific chords only — Windows EXE/MSI show Ctrl; Mac DMG shows ⌘. */
+export function getAppShortcutRows(isMac = isMacBuild()): AppShortcutRow[] {
   const mod = isMac ? "⌘" : "Ctrl";
   return [
     {
@@ -58,6 +58,6 @@ export function getAppShortcutRows(isMac = isMacPlatform()): AppShortcutRow[] {
   ];
 }
 
-export function appShortcutPlatformLabel(isMac = isMacPlatform()): string {
+export function appShortcutPlatformLabel(isMac = isMacBuild()): string {
   return isMac ? "Mac" : "Windows";
 }

@@ -336,6 +336,16 @@ After rebuilding a DMG that includes entitlements:
    tccutil reset Microphone com.systembunny.app
    ```
 
+### Windows is not the same flow
+
+Windows **NSIS/MSI** builds (what this repo ships) are classic Win32 apps. They do **not** need an `Entitlements.plist` equivalent for microphone. There is no macOS-style “missing entitlement → silent deny + never listed” bug for those installers.
+
+What *does* apply on Windows:
+
+- Settings → Privacy & security → Microphone must allow access (including desktop apps if that toggle appears).
+- **Check mic** uses WebView2 `getUserMedia`; the app auto-allows the webview microphone permission in Rust so WebView2 does not add an extra deny layer. OS privacy still applies.
+- Native **Record** uses WASAPI/`cpal` and does not depend on macOS-style code-signing entitlements.
+
 ## Windows (separate track)
 
 macOS signing does **not** fix Windows SmartScreen. For Windows you need a separate **Authenticode** code-signing certificate and signing of the `.exe` / `.msi` in the Windows workflow. Do Mac first with this guide; then tackle Windows.
