@@ -322,6 +322,20 @@ codesign -dv --verbose=4 /Applications/System\ Bunny.app
 
 ---
 
+## Microphone not listed in System Settings
+
+`Info.plist` already has `NSMicrophoneUsageDescription`. The Mac build also needs [`Entitlements.plist`](../src-tauri/Entitlements.plist) with `com.apple.security.device.audio-input` (wired via `bundle.macOS.entitlements`). Without that entitlement—especially under Hardened Runtime—macOS can deny the mic **silently**: no prompt and **no row** under Privacy & Security → Microphone.
+
+After rebuilding a DMG that includes entitlements:
+
+1. Open System Bunny and use **Check microphone** or start **Record** (that triggers the OS request).
+2. Accept the system dialog when it appears.
+3. If it still never appears, reset TCC for this app (Terminal), then try again:
+
+   ```bash
+   tccutil reset Microphone com.systembunny.app
+   ```
+
 ## Windows (separate track)
 
 macOS signing does **not** fix Windows SmartScreen. For Windows you need a separate **Authenticode** code-signing certificate and signing of the `.exe` / `.msi` in the Windows workflow. Do Mac first with this guide; then tackle Windows.
