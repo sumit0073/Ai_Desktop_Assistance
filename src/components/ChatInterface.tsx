@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
 } from "react";
 import { useAuth } from "../context/AuthContext";
@@ -32,6 +33,13 @@ import {
   reconcileSegmentOverlap,
   type AudioLane,
 } from "../lib/transcriptOverlap";
+import { useTheme } from "../context/ThemeContext";
+import {
+  chatOverlayCssVars,
+  loadChatOverlaySlider,
+  saveChatOverlaySlider,
+} from "../lib/chatOverlayOpacity";
+import { ChatOpacityBar } from "./ChatOpacityBar";
 import { ComposerMicIcon } from "./ComposerMicIcon";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ProfileMenu } from "./ProfileMenu";
@@ -90,6 +98,7 @@ const modLabel = isMac ? "⌘" : "Ctrl";
 
 export function ChatInterface() {
   const { user } = useAuth();
+  const { theme } = useTheme();
   const { stopSession } = useWorkSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -97,7 +106,19 @@ export function ChatInterface() {
     null,
   );
   const [sending, setSending] = useState(false);
+  const [overlaySlider, setOverlaySlider] = useState(loadChatOverlaySlider);
   const [micStatus, setMicStatus] = useState<string | null>(null);
+
+  const onOverlaySliderChange = useCallback((value: number) => {
+    setOverlaySlider(value);
+    saveChatOverlaySlider(value);
+  }, []);
+
+  // Concrete --glass colors (not nested CSS vars) so the slider visibly updates.
+  const overlayStyle = chatOverlayCssVars(
+    overlaySlider,
+    theme,
+  ) as CSSProperties;
   /** Question ids already sent to the AI (hide from the open-question tray). */
   const [answeredQuestionIds, setAnsweredQuestionIds] = useState<string[]>([]);
   /** Inline edit buffer for a question chip. */
@@ -857,7 +878,7 @@ export function ChatInterface() {
   };
 
   return (
-    <div className="shell chat">
+    <div className="shell chat" style={overlayStyle}>
       <aside className="chat-glass chat-glass--fullscreen">
         <header className="topbar" data-tauri-drag-region>
           <div className="topbar__leading">
@@ -875,6 +896,10 @@ export function ChatInterface() {
             </div>
           </div>
           <div className="topbar__actions">
+            <ChatOpacityBar
+              value={overlaySlider}
+              onChange={onOverlaySliderChange}
+            />
             <ThemeToggle />
             <ProfileMenu />
             <WindowControls />

@@ -12,20 +12,22 @@
     linear-gradient(160deg, var(--bg-b), var(--bg-a));
 }
 
-/* Dense session glass: faint background silhouette only, not readable detail */
+/* Session glass defaults; ChatInterface overrides --glass* from the Glass slider. */
 .app-root.session-active {
   background: transparent;
-  --glass: rgba(248, 251, 253, 0.93);
-  --glass-strong: rgba(250, 252, 253, 0.97);
-  --bubble-assistant: rgba(255, 255, 255, 0.96);
-  --input: rgba(255, 255, 255, 0.96);
+  --overlay-opacity: 0.525;
+  --overlay-blur: 26px;
+  --glass: rgb(248 251 253 / 0.525);
+  --glass-strong: rgb(250 252 253 / 0.565);
+  --bubble-assistant: rgb(255 255 255 / 0.575);
+  --input: rgb(255 255 255 / 0.575);
 }
 
 [data-theme="dark"] .app-root.session-active {
-  --glass: rgba(10, 20, 28, 0.93);
-  --glass-strong: rgba(10, 20, 28, 0.97);
-  --bubble-assistant: rgba(255, 255, 255, 0.14);
-  --input: rgba(255, 255, 255, 0.14);
+  --glass: rgb(10 20 28 / 0.525);
+  --glass-strong: rgb(10 20 28 / 0.565);
+  --bubble-assistant: rgb(255 255 255 / 0.14);
+  --input: rgb(255 255 255 / 0.14);
 }
 
 /* Send: solid, high-contrast CTA on dense glass */
@@ -54,12 +56,14 @@
 }
 
 .app-root.session-active .chat-glass {
-  backdrop-filter: blur(28px) saturate(1.15);
-  -webkit-backdrop-filter: blur(28px) saturate(1.15);
+  background: var(--glass);
+  backdrop-filter: blur(var(--overlay-blur, 26px)) saturate(1.15);
+  -webkit-backdrop-filter: blur(var(--overlay-blur, 26px)) saturate(1.15);
 }
 
+/* Keep composer on glass vars so the slider is visible (no opaque panel-solid mix). */
 .app-root.session-active .chat-composer {
-  background: color-mix(in srgb, var(--glass-strong) 96%, var(--panel-solid));
+  background: var(--glass-strong);
 }
 
 .floating-card {
@@ -152,6 +156,56 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.chat-opacity-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 200px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--glass-strong) 55%, transparent);
+  flex-shrink: 1;
+}
+
+.chat-opacity-bar__label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.chat-opacity-bar__range {
+  flex: 1 1 88px;
+  min-width: 72px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.chat-opacity-bar__value {
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 2.4em;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+@media (max-width: 720px) {
+  .chat-opacity-bar__label {
+    display: none;
+  }
+
+  .chat-opacity-bar {
+    max-width: 140px;
+  }
 }
 
 /* Native-style window chrome */

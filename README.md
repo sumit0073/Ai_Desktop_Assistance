@@ -101,8 +101,8 @@ installers — not an Android APK.
    - `VITE_CHAT_PROXY_URL` (e.g. `https://<ref>.supabase.co/functions/v1/chat-proxy`)
 2. Optional: secret `VITE_GOOGLE_CLIENT_ID`; variables `VITE_GROQ_MODEL`, `VITE_GROQ_VISION_MODEL`
 3. Open [Actions → Build Desktop Installers](https://github.com/sumit0073/Ai_Desktop_Assistance/actions/workflows/build-desktop.yml)
-4. **Run workflow** — set **version** to e.g. `0.1.7` (default), optional note → wait for Windows + macOS jobs  
-   Publishes GitHub Release tag `app-v0.1.7` (from the version input / `tauri.conf.json`)
+4. **Run workflow** — leave **version** empty to use the repo version (currently `0.1.9`), or set it explicitly; optional **note** for the release title → wait for Windows + macOS jobs  
+   Publishes GitHub Release tag `app-v0.1.9` (from the version input / `tauri.conf.json`)
 5. Download from:
    - **Releases**: https://github.com/sumit0073/Ai_Desktop_Assistance/releases  
    - or the workflow run **Artifacts** (`SystemBunny-Windows-x64`, `SystemBunny-macOS-*`)

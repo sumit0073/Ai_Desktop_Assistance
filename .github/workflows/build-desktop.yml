@@ -1,8 +1,13 @@
 # Builds System Bunny for Windows (.exe / .msi) and macOS (.dmg)
 # and publishes downloadable installers on a GitHub Release.
 #
-# Trigger: Actions → "Build Desktop Installers" → Run workflow
-#   - version: e.g. 0.1.8 (optional; leave blank to use the version already in the repo)
+# How to ship a new release (v0.1.9+):
+#   1. Push version bump to main (package.json / tauri.conf / Cargo.toml already synced).
+#   2. Actions → "Build Desktop Installers" → Run workflow
+#   3. version: leave empty (uses repo version) OR set explicitly e.g. 0.1.9
+#   4. note: optional human release title
+#   5. Wait for Windows + macOS jobs → publishes GitHub Release tag app-v*
+#
 # Download: repo Releases page, or the workflow run Artifacts
 #
 # Required repository secrets:
@@ -20,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.1.8). Leave empty to use the version already in the repo."
+        description: "Release version (e.g. 0.1.9). Leave empty to use the version already in the repo."
         required: false
         type: string
         default: ""
@@ -309,6 +314,10 @@ jobs:
 
             Desktop installers for this build.
 
+            ### What’s in this release
+            - Chat **Glass** slider — control overlay transparency during a session
+            - Clearer **Check mic** help (Mac vs Windows steps, with a one-tap settings link)
+
             ### Windows
             - **Setup (.exe)** — NSIS installer (recommended)
             - **MSI** — WiX installer for enterprise / silent deploy
@@ -317,7 +326,8 @@ jobs:
             ### macOS
             - **Apple Silicon** — filename contains `aarch64`
             - **Intel** — filename contains `x64` / `x86_64`
-            - First open: right-click the app → **Open** (ad-hoc signed build)
+            - First open: right-click the app → **Open** if Gatekeeper blocks (ad-hoc signed until Developer ID notarization is wired)
+            - If the mic is blocked: Check mic → follow the in-app Mac steps (Privacy & Security → Microphone)
 
             Previous `app-v*` releases are removed when this workflow publishes.
           files: |
